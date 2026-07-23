@@ -870,6 +870,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   section.card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   section.card h2 { margin: 0 0 4px 0; font-size: 18px; }
   section.card .sub { font-size: 13px; color: #888; margin-bottom: 12px; }
+  .section-eyebrow { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--violet); margin-bottom: 6px; }
+  .cmp-select { border: 1px solid #ddd; border-radius: 8px; padding: 6px 10px; font-size: 13px; color: var(--dark); background: #fff; max-width: 100%; }
   .chart { width: 100%; height: 460px; }
   .reco { margin-top: 14px; padding: 14px 18px; background: #F1EEFF; border-left: 4px solid var(--violet); border-radius: 6px; font-size: 14px; line-height: 1.5; }
   .reco b { color: var(--violet); }
@@ -939,15 +941,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <main>
 
   <section class="card">
+    <div class="section-eyebrow">1 &middot; Vue d'ensemble</div>
     <h2>Résumé compte</h2>
-    <div class="sub">Spend, Clics, Achats, ROAS sur la période sélectionnée (filtre ci-dessus), comparés à la période N-1 (même durée, immédiatement précédente).</div>
+    <div class="sub">Spend, Valeur de conversion, Clics, Achats, ROAS sur la période sélectionnée (filtre ci-dessus), comparés à la période N-1 (même durée, immédiatement précédente).</div>
     <div class="kpis-compare" id="kpis-compare"></div>
     <div class="reco-caption" id="resume-caption"></div>
   </section>
 
   <section class="card">
+    <div class="section-eyebrow">2 &middot; Vue d'ensemble</div>
     <h2>Synthèse créative</h2>
-    <div class="sub">Mix de formats (spend) et volume de créas par format, sur la période et le persona sélectionnés.</div>
+    <div class="sub">Mix de formats (spend) et volume de créas par format, sur la période et le persona sélectionnés. Top 3 par catégorie.</div>
     <div id="chart-format-mix" class="chart" style="height:150px"></div>
     <div id="chart-format-volume" class="chart" style="height:320px"></div>
     <div class="badges-grid" id="top5-badges"></div>
@@ -1027,29 +1031,43 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </section>
 
   <section class="card">
+    <div class="section-eyebrow">3 &middot; Analyse temporelle</div>
     <h2>CPMR (CPM x Fréquence) &amp; CPA dans le temps</h2>
-    <div class="sub">Marchés FR / US / UK (détection large dans le nom de campagne). Barres CPMR groupées par marché, courbe CPA (axe secondaire) sur l'ensemble FR+US+UK.</div>
-    <div class="granularity-toggle">
-      <button class="preset-btn active" data-gran="day">Jour</button>
-      <button class="preset-btn" data-gran="week">Semaine</button>
+    <div class="sub">Sélectionnez un pays (détection large dans le nom de campagne) et/ou une campagne précise pour affiner l'analyse. Barres CPMR (axe principal), courbe CPA en superposition (axe secondaire).</div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <div class="granularity-toggle" style="margin-bottom:0;">
+        <button class="preset-btn active" data-gran="day">Jour</button>
+        <button class="preset-btn" data-gran="week">Semaine</button>
+      </div>
+      <div class="granularity-toggle" id="cpmr-country-toggle" style="margin-bottom:0;">
+        <button class="preset-btn active" data-country="ALL">Tous pays</button>
+        <button class="preset-btn" data-country="FR">FR</button>
+        <button class="preset-btn" data-country="US">US</button>
+        <button class="preset-btn" data-country="UK">UK</button>
+      </div>
+      <select id="cpmr-campaign-select" class="cmp-select"></select>
     </div>
     <div id="chart-cpmr" class="chart"></div>
+    <div class="reco-caption" id="cpmr-mode-caption"></div>
     <div class="reco-caption">CPM et CPA recalculés à partir de Cost/Impressions/Achats (agrégation exacte). Fréquence agrégée en moyenne pondérée par les impressions (approximation usuelle en l'absence de la métrique Reach).</div>
   </section>
 
   <section class="card">
+    <div class="section-eyebrow">4 &middot; Analyse temporelle</div>
     <h2>Whitelisting vs total</h2>
     <div class="sub">% du spend des campagnes "whitelisting" (détection insensible à la casse dans le nom de campagne) vs spend total, sur la période sélectionnée.</div>
     <div id="whitelisting-box"></div>
   </section>
 
   <section class="card">
+    <div class="section-eyebrow">5 &middot; Analyse temporelle</div>
     <h2>Spend par landing page</h2>
     <div class="sub">Agrégation du spend par landing page (destination URL), sur la période sélectionnée.</div>
     <div id="landing-page-box"></div>
   </section>
 
   <section class="card">
+    <div class="section-eyebrow">6 &middot; Analyse temporelle</div>
     <h2>Comparaison campagne (période personnalisée)</h2>
     <div class="sub">2 périodes libres et indépendantes - Impressions, Clics, CTR, Add to cart, Taux d'ATC, Achats, Valeur de conversion, ROAS par campagne.</div>
     <div class="period-picker">
@@ -1057,6 +1075,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <input type="date" id="cmp-a-start"><span>&rarr;</span><input type="date" id="cmp-a-end">
       <span class="tag b" style="margin-left:18px">Période B</span>
       <input type="date" id="cmp-b-start"><span>&rarr;</span><input type="date" id="cmp-b-end">
+    </div>
+    <div style="margin:14px 0 4px;">
+      <label style="font-size:13px; color:#888; margin-right:8px;">Filtrer par campagne</label>
+      <select id="cmp-campaign-filter" class="cmp-select"></select>
     </div>
     <div class="table-scroll"><table class="cmp-table" id="cmp-table"></table></div>
   </section>
@@ -1424,7 +1446,7 @@ function accountAgg(rows) {
   for (const r of rows) {
     spend += r[FC.cost]; clicks += r[FC.clicks]; purchases += r[FC.purchases]; value += r[FC.conv_value];
   }
-  return { spend, clicks, purchases, roas: spend > 0 ? value / spend : 0 };
+  return { spend, clicks, purchases, conv_value: value, roas: spend > 0 ? value / spend : 0 };
 }
 
 // N-1 = same duration, immediately preceding the selected period. Clamped to
@@ -1465,6 +1487,7 @@ function renderKpisCompare() {
 
   const metrics = [
     ["Spend", cur.spend, prev ? prev.spend : null, euros],
+    ["Valeur de conversion", cur.conv_value, prev ? prev.conv_value : null, euros],
     ["Clics", cur.clicks, prev ? prev.clicks : null, intFr],
     ["Achats", cur.purchases, prev ? prev.purchases : null, intFr],
     ["ROAS", cur.roas, prev ? prev.roas : null, x => x.toFixed(2) + "x"],
@@ -1534,14 +1557,16 @@ function renderFormatVolume(rows) {
 // "Top angles"/"Top produits" have no dedicated nomenclature segment - mapped
 // to the closest existing fields (collection / gamme respectively), disclosed
 // via the section's caption.
+const TOP_BADGES_CAP = 3;
+
 function renderTop5Badges(rows) {
   const cats = [
     ["Top personas", "persona"], ["Top formats", "format"], ["Top concepts", "concept"],
     ["Top produits", "gamme"], ["Top angles", "collection"],
   ];
   document.getElementById("top5-badges").innerHTML = cats.map(([title, field]) => {
-    const top5 = aggregateJS(rows, field).slice(0, 5);
-    const pills = top5.map(d => `<span class="badge-pill">${d.label} <span class="n">${d.roas.toFixed(2)}x</span></span>`).join("");
+    const top = aggregateJS(rows, field).slice(0, TOP_BADGES_CAP);
+    const pills = top.map(d => `<span class="badge-pill">${d.label} <span class="n">${d.roas.toFixed(2)}x</span></span>`).join("");
     return `<div><div class="badge-col-title">${title}</div>${pills || '<span class="n">—</span>'}</div>`;
   }).join("");
 }
@@ -1555,6 +1580,8 @@ function renderTop5Badges(rows) {
 // approximation, not a fabricated number.
 // ---------------------------------------------------------------------------
 let cpmrGranularity = "day";
+let cpmrCountry = "ALL";
+let cpmrCampaignIdx = null; // null = aggregated by country; else drill into one campaign
 
 function cpmrBucketKey(dateStr, granularity) {
   if (granularity === "day") return dateStr;
@@ -1564,12 +1591,15 @@ function cpmrBucketKey(dateStr, granularity) {
   return new Date(d.getTime() + diff * 86400000).toISOString().slice(0, 10);
 }
 
-function cpmrBucketAgg(rows, granularity) {
+// Aggregated (all campaigns) mode: grouped by market, restricted to the
+// selected country ("ALL" keeps FR+US+UK grouped bars, else a single market).
+function cpmrBucketAgg(rows, granularity, country) {
+  const markets = country === "ALL" ? ["FR", "US", "UK"] : [country];
   const buckets = new Map();
   const bucketSet = new Set();
   for (const r of rows) {
     const mkt = r[FC.market_loose];
-    if (!mkt) continue;
+    if (!mkt || !markets.includes(mkt)) continue;
     const bKey = cpmrBucketKey(r[FC.date], granularity);
     bucketSet.add(bKey);
     const key = bKey + "|" + mkt;
@@ -1581,7 +1611,6 @@ function cpmrBucketAgg(rows, granularity) {
     b.freqImpSum += r[FC.frequency] * r[FC.impressions];
   }
   const buckets_sorted = Array.from(bucketSet).sort();
-  const markets = ["FR", "US", "UK"];
   const series = {};
   for (const m of markets) {
     series[m] = buckets_sorted.map(bk => {
@@ -1601,27 +1630,80 @@ function cpmrBucketAgg(rows, granularity) {
   return { buckets: buckets_sorted, series, cpaSeries };
 }
 
+// Single-campaign drill-down mode: one CPMR bar series + one CPA line for the
+// selected campaign only, ignoring the country filter (a campaign may or may
+// not carry an FR/US/UK token).
+function cpmrBucketAggCampaign(rows, granularity, campaignIdx) {
+  const buckets = new Map();
+  for (const r of rows) {
+    if (r[FC.campaign_idx] !== campaignIdx) continue;
+    const bKey = cpmrBucketKey(r[FC.date], granularity);
+    if (!buckets.has(bKey)) buckets.set(bKey, { cost: 0, impressions: 0, purchases: 0, freqImpSum: 0 });
+    const b = buckets.get(bKey);
+    b.cost += r[FC.cost];
+    b.impressions += r[FC.impressions];
+    b.purchases += r[FC.purchases];
+    b.freqImpSum += r[FC.frequency] * r[FC.impressions];
+  }
+  const buckets_sorted = Array.from(buckets.keys()).sort();
+  const cpmr = buckets_sorted.map(bk => {
+    const b = buckets.get(bk);
+    return b.impressions > 0 ? (b.cost / b.impressions * 1000) * (b.freqImpSum / b.impressions) : null;
+  });
+  const cpa = buckets_sorted.map(bk => {
+    const b = buckets.get(bk);
+    return b.purchases > 0 ? b.cost / b.purchases : null;
+  });
+  return { buckets: buckets_sorted, cpmr, cpa };
+}
+
 function renderCPMRChart() {
   const rows = campaignRowsInRange(dateStartEl.value, dateEndEl.value);
-  const { buckets, series, cpaSeries } = cpmrBucketAgg(rows, cpmrGranularity);
-  if (!buckets.length) { Plotly.react("chart-cpmr", [], {}); return; }
-  const marketColors = { FR: VIOLET, US: "#FF4444", UK: DARK };
-  const marketLabels = { FR: "France", US: "USA", UK: "UK" };
-  const traces = ["FR", "US", "UK"].map(m => ({
-    type: "bar", name: marketLabels[m], x: buckets, y: series[m], marker: { color: marketColors[m] }, yaxis: "y",
-  }));
-  traces.push({
-    type: "scatter", mode: "lines+markers", name: "CPA (FR+US+UK)",
-    x: buckets, y: cpaSeries, yaxis: "y2", line: { color: "#FFA733", width: 2 },
-  });
-  Plotly.react("chart-cpmr", traces, {
+  const modeCaption = document.getElementById("cpmr-mode-caption");
+  const layoutBase = {
     margin: { l: 60, r: 60, t: 10, b: 70 },
     barmode: "group",
     xaxis: { tickangle: -45 },
     yaxis: { title: "CPMR" },
     yaxis2: { title: "CPA (€)", overlaying: "y", side: "right" },
     legend: { orientation: "h", y: -0.35 },
-  }, { responsive: true, displaylogo: false });
+  };
+
+  if (cpmrCampaignIdx !== null) {
+    const { buckets, cpmr, cpa } = cpmrBucketAggCampaign(rows, cpmrGranularity, cpmrCampaignIdx);
+    if (!buckets.length) {
+      Plotly.react("chart-cpmr", [], {});
+      modeCaption.textContent = "Aucune donnée pour cette campagne sur la période sélectionnée.";
+      return;
+    }
+    const traces = [
+      { type: "bar", name: "CPMR", x: buckets, y: cpmr, marker: { color: VIOLET }, yaxis: "y" },
+      { type: "scatter", mode: "lines+markers", name: "CPA", x: buckets, y: cpa, yaxis: "y2", line: { color: "#FFA733", width: 2 } },
+    ];
+    Plotly.react("chart-cpmr", traces, layoutBase, { responsive: true, displaylogo: false });
+    modeCaption.textContent = `Campagne sélectionnée : ${CAMPAIGN_NAMES[cpmrCampaignIdx]} (le filtre pays est ignoré en mode campagne unique).`;
+    return;
+  }
+
+  const { buckets, series, cpaSeries } = cpmrBucketAgg(rows, cpmrGranularity, cpmrCountry);
+  if (!buckets.length) {
+    Plotly.react("chart-cpmr", [], {});
+    modeCaption.textContent = "Aucune donnée pour ce pays sur la période sélectionnée.";
+    return;
+  }
+  const marketColors = { FR: VIOLET, US: "#FF4444", UK: DARK };
+  const marketLabels = { FR: "France", US: "USA", UK: "UK" };
+  const activeMarkets = cpmrCountry === "ALL" ? ["FR", "US", "UK"] : [cpmrCountry];
+  const traces = activeMarkets.map(m => ({
+    type: "bar", name: marketLabels[m], x: buckets, y: series[m], marker: { color: marketColors[m] }, yaxis: "y",
+  }));
+  traces.push({
+    type: "scatter", mode: "lines+markers",
+    name: cpmrCountry === "ALL" ? "CPA (FR+US+UK)" : `CPA (${marketLabels[cpmrCountry]})`,
+    x: buckets, y: cpaSeries, yaxis: "y2", line: { color: "#FFA733", width: 2 },
+  });
+  Plotly.react("chart-cpmr", traces, layoutBase, { responsive: true, displaylogo: false });
+  modeCaption.textContent = "";
 }
 
 document.querySelectorAll(".granularity-toggle .preset-btn").forEach(btn => {
@@ -1632,6 +1714,25 @@ document.querySelectorAll(".granularity-toggle .preset-btn").forEach(btn => {
     renderCPMRChart();
   });
 });
+
+document.querySelectorAll("#cpmr-country-toggle .preset-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#cpmr-country-toggle .preset-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    cpmrCountry = btn.dataset.country;
+    renderCPMRChart();
+  });
+});
+
+(function initCpmrCampaignSelect() {
+  const sel = document.getElementById("cpmr-campaign-select");
+  sel.innerHTML = '<option value="">Toutes les campagnes</option>' +
+    CAMPAIGN_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join("");
+  sel.addEventListener("change", () => {
+    cpmrCampaignIdx = sel.value === "" ? null : Number(sel.value);
+    renderCPMRChart();
+  });
+})();
 
 // ---------------------------------------------------------------------------
 // Section 4 - Whitelisting vs total spend, on the shared date filter. Always
@@ -1712,6 +1813,8 @@ const CMP_COLS = [
 ];
 const CMP_ZERO = { impressions: 0, clicks: 0, ctr: 0, add_to_cart: 0, taux_atc: 0, purchases: 0, conv_value: 0, roas: 0, cost: 0 };
 
+let cmpCampaignFilter = null;
+
 function renderComparisonTable() {
   const aStart = document.getElementById("cmp-a-start").value, aEnd = document.getElementById("cmp-a-end").value;
   const bStart = document.getElementById("cmp-b-start").value, bEnd = document.getElementById("cmp-b-end").value;
@@ -1720,9 +1823,10 @@ function renderComparisonTable() {
 
   const metricsA = computeCampaignMetrics(campaignRowsInRange(aStart, aEnd));
   const metricsB = computeCampaignMetrics(campaignRowsInRange(bStart, bEnd));
-  const allIdx = new Set([...metricsA.keys(), ...metricsB.keys()]);
+  let idxList = Array.from(new Set([...metricsA.keys(), ...metricsB.keys()]));
+  if (cmpCampaignFilter !== null) idxList = idxList.filter(idx => idx === cmpCampaignFilter);
 
-  const rows = Array.from(allIdx).map(idx => {
+  const rows = idxList.map(idx => {
     const a = metricsA.get(idx) || CMP_ZERO, b = metricsB.get(idx) || CMP_ZERO;
     return { name: CAMPAIGN_NAMES[idx], a, b, sortKey: Math.max(a.cost, b.cost) };
   }).sort((x, y) => y.sortKey - x.sortKey);
@@ -1764,6 +1868,16 @@ const cmpBStart = document.getElementById("cmp-b-start"), cmpBEnd = document.get
   cmpBEnd.value = bEndDate.toISOString().slice(0, 10);
 })();
 [cmpAStart, cmpAEnd, cmpBStart, cmpBEnd].forEach(el => el.addEventListener("change", renderComparisonTable));
+
+(function initCmpCampaignSelect() {
+  const sel = document.getElementById("cmp-campaign-filter");
+  sel.innerHTML = '<option value="">Toutes les campagnes</option>' +
+    CAMPAIGN_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join("");
+  sel.addEventListener("change", () => {
+    cmpCampaignFilter = sel.value === "" ? null : Number(sel.value);
+    renderComparisonTable();
+  });
+})();
 
 function update() {
   const dateRows = rowsInDateRange();
