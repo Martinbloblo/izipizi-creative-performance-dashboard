@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IZIPIZI - Creative Performance Dashboard (Meta Ads)</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root { --violet: #5A45FF; --dark: #171717; --green: #9CF694; --red: #FF4444; --grey: #F4F4F6; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: var(--grey); color: var(--dark); }
+  header { background: var(--dark); color: #fff; padding: 28px 32px; }
+  header h1 { margin: 0 0 6px 0; font-size: 22px; }
+  header p { margin: 0; color: #bbb; font-size: 14px; }
+  .kpis { display: flex; gap: 16px; padding: 20px 32px; flex-wrap: wrap; }
+  .kpi { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); min-width: 160px; }
+  .kpi .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi .value { font-size: 24px; font-weight: 700; color: var(--violet); margin-top: 4px; }
+  main { padding: 8px 32px 48px; max-width: 1280px; margin: 0 auto; }
+  section.card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  section.card h2 { margin: 0 0 4px 0; font-size: 18px; }
+  section.card .sub { font-size: 13px; color: #888; margin-bottom: 12px; }
+  .chart { width: 100%; height: 460px; }
+  .reco { margin-top: 14px; padding: 14px 18px; background: #F1EEFF; border-left: 4px solid var(--violet); border-radius: 6px; font-size: 14px; line-height: 1.5; }
+  .reco b { color: var(--violet); }
+  footer { text-align: center; color: #999; font-size: 12px; padding: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>IZIPIZI - Creative Performance Dashboard (Meta Ads)</h1>
+  <p id="period-label"></p>
+</header>
+<div class="kpis" id="kpis"></div>
+<main>
+
+  <section class="card">
+    <h2>Persona x ROAS x Spend x Volume de créas</h2>
+    <div class="sub">Un point = un persona. X = spend, Y = ROAS, Z = nombre de créas rattachées à ce persona depuis le 01/01/2026.</div>
+    <div id="chart-persona" class="chart"></div>
+    <div class="reco" id="reco-persona"></div>
+  </section>
+
+  <section class="card">
+    <h2>Format</h2>
+    <div class="sub">Spend x ROAS x volume de créas par type de format.</div>
+    <div id="chart-format" class="chart"></div>
+    <div class="reco" id="reco-format"></div>
+  </section>
+
+  <section class="card">
+    <h2>Gamme / Usage</h2>
+    <div class="sub">ROAS par gamme produit (SUN, READING, SCREEN, SPORT, KIDS...).</div>
+    <div id="chart-gamme" class="chart"></div>
+    <div class="reco" id="reco-gamme"></div>
+  </section>
+
+  <section class="card">
+    <h2>Collection / Ligne</h2>
+    <div class="sub">CPA (coût par achat) par collection - top 12 par spend, du plus efficace au moins efficace.</div>
+    <div id="chart-collection" class="chart"></div>
+    <div class="reco" id="reco-collection"></div>
+  </section>
+
+  <section class="card">
+    <h2>Coloris / Modèle</h2>
+    <div class="sub">ROAS par coloris - top 12 par spend.</div>
+    <div id="chart-coloris" class="chart"></div>
+    <div class="reco" id="reco-coloris"></div>
+  </section>
+
+  <section class="card">
+    <h2>Concept créatif</h2>
+    <div class="sub">Spend x ROAS x volume de créas par concept de shooting/montage - top 12 par spend.</div>
+    <div id="chart-concept" class="chart"></div>
+    <div class="reco" id="reco-concept"></div>
+  </section>
+
+  <section class="card">
+    <h2>Affichage du prix</h2>
+    <div class="sub">Avec prix vs Sans prix.</div>
+    <div id="chart-prix" class="chart"></div>
+    <div class="reco" id="reco-prix"></div>
+  </section>
+
+</main>
+<footer>Source : Supermetrics -> Facebook Ads (IZIPIZI FRANCE, act_10151142776889200) - Achats Website (attribution par défaut du compte) - Généré automatiquement</footer>
+
+<script>
+const DATA = {"meta": {"total_spend": 798968.78, "total_value": 3035860.31, "avg_roas": 3.8, "total_purchases": 46344.0, "n_ads": 287, "period": "01/01/2026 -> aujourd'hui", "coverage": {"persona": [218, 287], "format": [284, 287], "gamme": [246, 287], "collection": [228, 287], "coloris": [224, 287], "concept": [204, 287], "prix": [219, 287]}}, "persona": [{"label": "Young Dynamic", "spend": 294477.29, "value": 1194729.86, "purchases": 17544.0, "n_ads": 103, "roas": 4.06, "cpa": 16.79}, {"label": "All Targets", "spend": 292346.41, "value": 1071287.93, "purchases": 16677.0, "n_ads": 45, "roas": 3.66, "cpa": 17.53}, {"label": "Young Parent", "spend": 117412.7, "value": 467975.53, "purchases": 8032.0, "n_ads": 37, "roas": 3.99, "cpa": 14.62}, {"label": "Young Presbyte", "spend": 77185.97, "value": 245071.6, "purchases": 3345.0, "n_ads": 33, "roas": 3.18, "cpa": 23.08}], "format": [{"label": "Image", "spend": 277059.41, "value": 951268.61, "purchases": 14151.0, "n_ads": 119, "roas": 3.43, "cpa": 19.58}, {"label": "Carrousel DAd", "spend": 190992.9, "value": 842576.87, "purchases": 13243.0, "n_ads": 8, "roas": 4.41, "cpa": 14.42}, {"label": "Video Social Friendly", "spend": 129762.03, "value": 524294.23, "purchases": 8395.0, "n_ads": 29, "roas": 4.04, "cpa": 15.46}, {"label": "Video UGC", "spend": 70593.46, "value": 175369.72, "purchases": 2787.0, "n_ads": 37, "roas": 2.48, "cpa": 25.33}, {"label": "Image Collection", "spend": 47569.66, "value": 166949.47, "purchases": 2268.0, "n_ads": 17, "roas": 3.51, "cpa": 20.97}, {"label": "Carrousel", "spend": 34016.89, "value": 147315.27, "purchases": 2273.0, "n_ads": 20, "roas": 4.33, "cpa": 14.97}, {"label": "Motion", "spend": 31956.21, "value": 175320.1, "purchases": 2487.0, "n_ads": 12, "roas": 5.49, "cpa": 12.85}, {"label": "Video Brand", "spend": 10424.48, "value": 35332.95, "purchases": 487.0, "n_ads": 7, "roas": 3.39, "cpa": 21.41}, {"label": "Video", "spend": 6080.66, "value": 17042.58, "purchases": 248.0, "n_ads": 33, "roas": 2.8, "cpa": 24.52}, {"label": "Gif", "spend": 232.74, "value": 390.51, "purchases": 5.0, "n_ads": 2, "roas": 1.68, "cpa": 46.55}], "gamme": [{"label": "SUN", "spend": 270105.5, "value": 742522.79, "purchases": 10651.0, "n_ads": 113, "roas": 2.75, "cpa": 25.36}, {"label": "MULTI GAMME", "spend": 159794.02, "value": 731989.32, "purchases": 11762.0, "n_ads": 4, "roas": 4.58, "cpa": 13.59}, {"label": "SPORT", "spend": 125553.13, "value": 662880.33, "purchases": 9970.0, "n_ads": 29, "roas": 5.28, "cpa": 12.59}, {"label": "KIDS", "spend": 117229.46, "value": 467710.49, "purchases": 8028.0, "n_ads": 34, "roas": 3.99, "cpa": 14.6}, {"label": "READING", "spend": 77185.97, "value": 245071.6, "purchases": 3345.0, "n_ads": 33, "roas": 3.18, "cpa": 23.08}, {"label": "SLEEPING", "spend": 29742.5, "value": 124476.19, "purchases": 1774.0, "n_ads": 20, "roas": 4.19, "cpa": 16.77}, {"label": "SCREEN", "spend": 5503.01, "value": 13106.98, "purchases": 196.0, "n_ads": 10, "roas": 2.38, "cpa": 28.08}, {"label": "SUN & KIDS", "spend": 88.29, "value": 0.0, "purchases": 0.0, "n_ads": 3, "roas": 0.0, "cpa": null}], "collection": [{"label": "PERMANENT", "spend": 233495.71, "value": 764204.36, "purchases": 11195.0, "n_ads": 103, "roas": 3.27, "cpa": 20.86}, {"label": "Multi Gamme", "spend": 158724.11, "value": 728549.74, "purchases": 11711.0, "n_ads": 3, "roas": 4.59, "cpa": 13.55}, {"label": "BONPOINT", "spend": 89899.06, "value": 355610.7, "purchases": 6094.0, "n_ads": 8, "roas": 3.96, "cpa": 14.75}, {"label": "CROSSROADS", "spend": 58772.95, "value": 205809.24, "purchases": 2808.0, "n_ads": 26, "roas": 3.5, "cpa": 20.93}, {"label": "Essential Edition", "spend": 58744.49, "value": 165927.44, "purchases": 2225.0, "n_ads": 13, "roas": 2.82, "cpa": 26.4}, {"label": "ALEGRIA", "spend": 56418.6, "value": 103789.42, "purchases": 1695.0, "n_ads": 28, "roas": 1.84, "cpa": 33.29}, {"label": "GLACIER", "spend": 50290.23, "value": 287581.37, "purchases": 4372.0, "n_ads": 8, "roas": 5.72, "cpa": 11.5}, {"label": "#HORIZON", "spend": 31931.05, "value": 163114.18, "purchases": 2447.0, "n_ads": 5, "roas": 5.11, "cpa": 13.05}, {"label": "#SNOW", "spend": 19875.32, "value": 143326.87, "purchases": 2202.0, "n_ads": 10, "roas": 7.21, "cpa": 9.03}, {"label": "#SPEED", "spend": 9659.15, "value": 30787.68, "purchases": 439.0, "n_ads": 1, "roas": 3.19, "cpa": 22.0}, {"label": "#OFFICE", "spend": 7433.99, "value": 12735.63, "purchases": 191.0, "n_ads": 3, "roas": 1.71, "cpa": 38.92}, {"label": "#ROAD", "spend": 4683.72, "value": 11003.54, "purchases": 143.0, "n_ads": 2, "roas": 2.35, "cpa": 32.75}], "coloris": [{"label": "Multi Variantes", "spend": 393092.73, "value": 1578775.43, "purchases": 24454.0, "n_ads": 102, "roas": 4.02, "cpa": 16.07}, {"label": "Cookie Dough", "spend": 50629.72, "value": 195954.0, "purchases": 3585.0, "n_ads": 1, "roas": 3.87, "cpa": 14.12}, {"label": "Light Tortoise", "spend": 41880.6, "value": 110333.86, "purchases": 1720.0, "n_ads": 9, "roas": 2.63, "cpa": 24.35}, {"label": "Granit", "spend": 36124.43, "value": 109628.87, "purchases": 1465.0, "n_ads": 4, "roas": 3.03, "cpa": 24.66}, {"label": "Turquoise Stone", "spend": 35363.03, "value": 127318.93, "purchases": 1784.0, "n_ads": 2, "roas": 3.6, "cpa": 19.82}, {"label": "Hazel", "spend": 34124.13, "value": 200959.77, "purchases": 3071.0, "n_ads": 3, "roas": 5.89, "cpa": 11.11}, {"label": "Frozen Blue", "spend": 25296.33, "value": 77941.08, "purchases": 1088.0, "n_ads": 4, "roas": 3.08, "cpa": 23.25}, {"label": "Tortoise", "spend": 22880.16, "value": 71537.68, "purchases": 1030.0, "n_ads": 25, "roas": 3.13, "cpa": 22.21}, {"label": "Glossy Havane", "spend": 17929.07, "value": 68646.45, "purchases": 972.0, "n_ads": 1, "roas": 3.83, "cpa": 18.45}, {"label": "Sand", "spend": 16586.71, "value": 68694.5, "purchases": 1018.0, "n_ads": 4, "roas": 4.14, "cpa": 16.29}, {"label": "Black", "spend": 15661.81, "value": 66838.58, "purchases": 929.0, "n_ads": 15, "roas": 4.27, "cpa": 16.86}, {"label": "Pasty Dream", "spend": 12930.92, "value": 21884.28, "purchases": 358.0, "n_ads": 5, "roas": 1.69, "cpa": 36.12}], "concept": [{"label": "Flux Sans Habillage", "spend": 190988.42, "value": 842576.87, "purchases": 13243.0, "n_ads": 7, "roas": 4.41, "cpa": 14.42}, {"label": "MoMa", "spend": 150176.16, "value": 466407.6, "purchases": 6539.0, "n_ads": 40, "roas": 3.11, "cpa": 22.97}, {"label": "Packshot", "spend": 115810.82, "value": 516116.99, "purchases": 7553.0, "n_ads": 38, "roas": 4.46, "cpa": 15.33}, {"label": "Unboxing", "spend": 103147.28, "value": 370427.89, "purchases": 6071.0, "n_ads": 13, "roas": 3.59, "cpa": 16.99}, {"label": "Multi Modèles", "spend": 73885.45, "value": 261045.95, "purchases": 4082.0, "n_ads": 43, "roas": 3.53, "cpa": 18.1}, {"label": "UGC Influenceur", "spend": 18724.01, "value": 37275.25, "purchases": 586.0, "n_ads": 7, "roas": 1.99, "cpa": 31.95}, {"label": "Split Screen", "spend": 13983.94, "value": 26877.6, "purchases": 451.0, "n_ads": 18, "roas": 1.92, "cpa": 31.01}, {"label": "Porté / Lifestyle", "spend": 6721.75, "value": 28217.7, "purchases": 434.0, "n_ads": 19, "roas": 4.2, "cpa": 15.49}, {"label": "Still Life", "spend": 5247.62, "value": 9612.94, "purchases": 166.0, "n_ads": 1, "roas": 1.83, "cpa": 31.61}, {"label": "KV Campagne", "spend": 2506.0, "value": 10623.14, "purchases": 162.0, "n_ads": 5, "roas": 4.24, "cpa": 15.47}, {"label": "Accumulation", "spend": 683.62, "value": 299.27, "purchases": 6.0, "n_ads": 3, "roas": 0.44, "cpa": 113.94}, {"label": "Mosaique Reading", "spend": 229.96, "value": 935.63, "purchases": 11.0, "n_ads": 2, "roas": 4.07, "cpa": 20.91}], "prix": [{"label": "Sans prix", "spend": 511861.64, "value": 1986243.33, "purchases": 30839.0, "n_ads": 133, "roas": 3.88, "cpa": 16.6}, {"label": "Avec prix", "spend": 260677.51, "value": 947924.33, "purchases": 14177.0, "n_ads": 86, "roas": 3.64, "cpa": 18.39}], "reco": {"persona": "<b>Young Dynamic</b> a le meilleur ROAS (4.06x) pour 294 477 € de spend sur 103 créas : c'est le persona le plus rentable, à prioriser dans le prochain brief de production. <b>Young Presbyte</b> a le ROAS le plus faible (3.18x) malgré 77 186 € de spend : challenger les concepts actuels ou réduire l'allocation avant de réinvestir.", "format": "<b>Motion</b> est le format le plus performant (ROAS 5.49x, 31 956 € de spend, 12 créas) : à privilégier dans les prochains tournages/réalisations. <b>Image</b> (3.43x) concentre(nt) un budget important pour un ROAS sous la moyenne compte (3.80x) : à requestionner (créa, ciblage ou pression publicitaire).", "gamme": "<b>SPORT</b> affiche le meilleur ROAS (5.28x) sur 125 553 € de spend (29 créas) : allouer davantage de production à cette valeur. <b>SUN & KIDS</b> est en retrait (ROAS 0.0x) : limiter les nouvelles déclinaisons tant que la performance ne s'améliore pas.", "collection": "<b>#SNOW</b> affiche le meilleur CPA (9.03 €) sur 19 875 € de spend (10 créas) : allouer davantage de production à cette valeur. <b>#OFFICE</b> est en retrait (CPA 38.92 €) : limiter les nouvelles déclinaisons tant que la performance ne s'améliore pas.", "coloris": "<b>Hazel</b> affiche le meilleur ROAS (5.89x) sur 34 124 € de spend (3 créas) : allouer davantage de production à cette valeur. <b>Pasty Dream</b> est en retrait (ROAS 1.69x) : limiter les nouvelles déclinaisons tant que la performance ne s'améliore pas.", "concept": "<b>Packshot</b> est le concept le plus performant (ROAS 4.46x, 115 811 € de spend, 38 créas) : à privilégier dans les prochains tournages/réalisations. <b>MoMa</b> (3.11x), <b>Unboxing</b> (3.59x), <b>Multi Modèles</b> (3.53x) concentre(nt) un budget important pour un ROAS sous la moyenne compte (3.80x) : à requestionner (créa, ciblage ou pression publicitaire). <b>Mosaique Reading</b> performe(nt) bien mais avec très peu de créas testées : élargir la production.", "prix": "<b>Sans prix</b> convertit mieux (ROAS 3.88x vs 3.64x pour <b>Avec prix</b>) sur la période. Généraliser l'affichage \"sans prix\" sur les prochaines déclinaisons, en gardant un test A/B minoritaire sur l'autre variante pour ne pas perdre le signal."}};
+const VIOLET = "#5A45FF";
+const PALETTE = ["#5A45FF","#171717","#FF4444","#9CF694","#FFB84D","#4DA1FF","#C64DFF","#4DFFD8","#FF4DA1","#B0B0B0"];
+
+document.getElementById("period-label").textContent =
+  `Période : ${DATA.meta.period} | ${DATA.meta.n_ads} ads avec spend | ${DATA.meta.total_purchases.toLocaleString('fr-FR')} achats`;
+
+function euros(x) { return x.toLocaleString('fr-FR', {maximumFractionDigits:0}) + " €"; }
+
+const kpis = document.getElementById("kpis");
+[
+  ["Spend total", euros(DATA.meta.total_spend)],
+  ["Valeur de conversion", euros(DATA.meta.total_value)],
+  ["ROAS moyen compte", DATA.meta.avg_roas + "x"],
+  ["Achats", Math.round(DATA.meta.total_purchases).toLocaleString('fr-FR')],
+].forEach(([label, value]) => {
+  const el = document.createElement("div");
+  el.className = "kpi";
+  el.innerHTML = `<div class="label">${label}</div><div class="value">${value}</div>`;
+  kpis.appendChild(el);
+});
+
+// ---- Persona 3D ----
+(function() {
+  const d = DATA.persona;
+  Plotly.newPlot("chart-persona", [{
+    type: "scatter3d",
+    mode: "markers+text",
+    x: d.map(p => p.spend),
+    y: d.map(p => p.roas),
+    z: d.map(p => p.n_ads),
+    text: d.map(p => p.label),
+    textposition: "top center",
+    marker: {
+      size: d.map(p => Math.max(8, Math.min(28, p.n_ads * 1.5))),
+      color: d.map((_, i) => PALETTE[i % PALETTE.length]),
+      opacity: 0.9,
+      line: { color: "#fff", width: 1 },
+    },
+  }], {
+    margin: {l:0,r:0,t:10,b:0},
+    scene: {
+      xaxis: { title: "Spend (€)" },
+      yaxis: { title: "ROAS" },
+      zaxis: { title: "Volume de créas" },
+    },
+  }, {responsive:true, displaylogo:false});
+  document.getElementById("reco-persona").innerHTML = DATA.reco.persona;
+})();
+
+function bubbleChart(divId, data, recoId, recoText) {
+  Plotly.newPlot(divId, [{
+    type: "scatter",
+    mode: "markers+text",
+    x: data.map(d => d.spend),
+    y: data.map(d => d.roas),
+    text: data.map(d => d.label),
+    textposition: "top center",
+    marker: {
+      size: data.map(d => Math.max(14, Math.min(70, d.n_ads * 3))),
+      color: data.map((_, i) => PALETTE[i % PALETTE.length]),
+      opacity: 0.85,
+      line: { color: "#fff", width: 1 },
+    },
+  }], {
+    margin: {l:60,r:20,t:10,b:50},
+    xaxis: { title: "Spend (€)" },
+    yaxis: { title: "ROAS" },
+  }, {responsive:true, displaylogo:false});
+  document.getElementById(recoId).innerHTML = recoText;
+}
+bubbleChart("chart-format", DATA.format, "reco-format", DATA.reco.format);
+bubbleChart("chart-concept", DATA.concept, "reco-concept", DATA.reco.concept);
+
+function barChart(divId, data, recoId, recoText, metric, ascending) {
+  let sorted = [...data].filter(d => d[metric] !== null && d[metric] !== undefined);
+  sorted.sort((a,b) => ascending ? a[metric]-b[metric] : b[metric]-a[metric]);
+  Plotly.newPlot(divId, [{
+    type: "bar",
+    orientation: "h",
+    x: sorted.map(d => d[metric]).reverse(),
+    y: sorted.map(d => d.label + `  (${euros(d.spend)}, ${d.n_ads} créas)`).reverse(),
+    marker: { color: VIOLET },
+  }], {
+    margin: {l:260,r:20,t:10,b:50},
+    xaxis: { title: metric === "roas" ? "ROAS" : "CPA (€)" },
+  }, {responsive:true, displaylogo:false});
+  document.getElementById(recoId).innerHTML = recoText;
+}
+barChart("chart-gamme", DATA.gamme, "reco-gamme", DATA.reco.gamme, "roas", false);
+barChart("chart-collection", DATA.collection, "reco-collection", DATA.reco.collection, "cpa", true);
+barChart("chart-coloris", DATA.coloris, "reco-coloris", DATA.reco.coloris, "roas", false);
+
+(function() {
+  const d = DATA.prix;
+  Plotly.newPlot("chart-prix", [
+    { type:"bar", name:"ROAS", x: d.map(x=>x.label), y: d.map(x=>x.roas), marker:{color:VIOLET}, yaxis:"y" },
+  ], {
+    margin: {l:60,r:20,t:10,b:50},
+    yaxis: { title: "ROAS" },
+    barmode: "group",
+  }, {responsive:true, displaylogo:false});
+  document.getElementById("reco-prix").innerHTML = DATA.reco.prix;
+})();
+</script>
+</body>
+</html>
