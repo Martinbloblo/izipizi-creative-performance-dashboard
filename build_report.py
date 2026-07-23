@@ -33,6 +33,7 @@ CSV_PATH = ROOT / "data_raw.csv"
 DAILY_CSV_PATH = ROOT / "data_daily.csv"
 MARKET_CSV_PATH = ROOT / "data_market_raw.csv"
 MARKET_DAILY_CSV_PATH = ROOT / "data_market_daily.csv"
+CAMPAIGN_EXT_CSV_PATH = ROOT / "data_market_daily_ext.csv"
 OUT_PATH = ROOT / "dashboard.html"
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,26 @@ def parse_market(campaign_name):
         return None
     code = m.group(1)
     return MARKET_NAMES.get(code, code)
+
+
+# Looser market extraction for the CPMR chart (section 3), per explicit user
+# request: search for the "FR"/"US"/"UK" tokens anywhere in the campaign name,
+# regardless of position/delimiter, instead of relying on the "(XX)" paren
+# convention used by parse_market() above. Word-boundary regex avoids false
+# positives such as "AUSTRALIE" (contains the substring "US") or "OUKA".
+_LOOSE_MARKET_RE = {code: re.compile(rf"\b{code}\b") for code in ("FR", "US", "UK")}
+
+
+def parse_market_loose(campaign_name):
+    upper = campaign_name.upper()
+    for code in ("FR", "US", "UK"):
+        if _LOOSE_MARKET_RE[code].search(upper):
+            return code
+    return None
+
+
+def is_whitelisting(campaign_name):
+    return "whitelisting" in campaign_name.lower()
 
 
 def safe_float(x):
@@ -320,6 +341,68 @@ def load_market_daily_rows():
                 "market": parse_market(r["campaign_name"]),
             })
     return rows
+
+
+def load_campaign_daily_ext_rows():
+    """Per-campaign, per-day rows with extended metrics (data_market_daily_ext.csv):
+    impressions, clicks, CPM, Frequency, add-to-cart, on top of cost/purchases/
+    conv_value - used by sections 1 (Resume compte), 3 (CPMR), 4 (Whitelisting)
+    and 6 (Comparaison campagne)."""
+    rows = []
+    with open(CAMPAIGN_EXT_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append({
+                "date": r["date"],
+                "campaign_name": r["campaign_name"],
+                "cost": safe_float(r["cost"]),
+                "purchases": safe_float(r["purchases"]),
+                "conv_value": safe_float(r["conv_value"]),
+                "impressions": safe_float(r["impressions"]),
+                "clicks": safe_float(r["clicks"]),
+                "add_to_cart": safe_float(r["add_to_cart"]),
+                "frequency": safe_float(r["frequency"]),
+                "market_loose": parse_market_loose(r["campaign_name"]),
+                "whitelisting": is_whitelisting(r["campaign_name"]),
+            })
+    return rows
+
+
+def build_campaign_daily_payload():
+    rows = load_campaign_daily_ext_rows()
+    campaign_names = sorted({r["campaign_name"] for r in rows})
+    campaign_index = {name: i for i, name in enumerate(campaign_names)}
+    dates = sorted({r["date"] for r in rows})
+    compact_rows = [
+        [
+            r["date"], campaign_index[r["campaign_name"]], round(r["cost"], 2),
+            round(r["purchases"], 1), round(r["conv_value"], 2),
+            round(r["impressions"], 0), round(r["clicks"], 0),
+            round(r["add_to_cart"], 1), round(r["frequency"], 4),
+            r["market_loose"], 1 if r["whitelisting"] else 0,
+        ]
+        for r in rows
+    ]
+    return {
+        "campaign_names": campaign_names,
+        "rows": compact_rows,
+        "date_min": dates[0] if dates else None,
+        "date_max": dates[-1] if dates else None,
+    }
+
+
+# Macro format grouping for the Synthese creative section (Video/Image/
+# Carousel mix) - buckets the existing fine-grained FORMAT_RULES labels.
+FORMAT_MACRO_MAP = {
+    "Video Social Friendly": "Video", "Video UGC": "Video", "Video Brand": "Video",
+    "Motion": "Video", "Gif": "Video", "Video": "Video",
+    "Image": "Image", "Image Collection": "Image",
+    "Carrousel": "Carousel", "Carrousel DAd": "Carousel",
+}
+
+
+def format_macro(label):
+    return FORMAT_MACRO_MAP.get(label)
 
 
 def aggregate_market(rows):
@@ -700,6 +783,7 @@ def main():
 
     daily = build_daily_payload()
     market_daily = build_market_daily_payload()
+    campaign_daily = build_campaign_daily_payload()
 
     payload = {
         "meta": {
@@ -741,6 +825,8 @@ def main():
         },
         "daily": daily,
         "market_daily": market_daily,
+        "campaign_daily": campaign_daily,
+        "format_macro_map": FORMAT_MACRO_MAP,
     }
 
     html = HTML_TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False))
@@ -749,7 +835,9 @@ def main():
         f"Wrote {OUT_PATH} ({len(rows)} ads since Jan 1, spend={fmt_eur(total_spend)}, "
         f"ROAS moyen={avg_roas:.2f}x | daily window {daily['date_min']} -> {daily['date_max']}, "
         f"{len(daily['rows'])} rows, {len(daily['ad_names'])} ads | "
-        f"market: {len(market_agg)} markets, {len(market_daily['rows'])} daily rows)"
+        f"market: {len(market_agg)} markets, {len(market_daily['rows'])} daily rows | "
+        f"campaign_daily: {len(campaign_daily['campaign_names'])} campaigns, "
+        f"{len(campaign_daily['rows'])} rows)"
     )
 
 
@@ -791,6 +879,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .ideas ul { margin: 4px 0 0 0; padding-left: 18px; }
   .ideas-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 700; }
   footer { text-align: center; color: #999; font-size: 12px; padding: 20px; }
+
+  .kpis-compare { display: flex; gap: 16px; flex-wrap: wrap; }
+  .kpi-compare { background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 16px 20px; min-width: 190px; flex: 1 1 190px; }
+  .kpi-compare .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi-compare .value { font-size: 24px; font-weight: 700; color: var(--violet); margin-top: 4px; }
+  .kpi-compare .delta { font-size: 13px; margin-top: 6px; font-weight: 600; }
+  .kpi-compare .delta.up { color: #1E9E4E; }
+  .kpi-compare .delta.down { color: var(--red); }
+  .kpi-compare .delta.na { color: #aaa; font-weight: 400; }
+  .kpi-compare .prev-label { font-size: 11px; color: #aaa; margin-top: 2px; }
+
+  .badges-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-top: 18px; }
+  .badge-col-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 700; margin-bottom: 8px; }
+  .badge-pill { display: inline-block; background: #F1EEFF; color: var(--violet); border-radius: 14px; padding: 4px 12px; font-size: 12.5px; margin: 0 6px 6px 0; font-weight: 600; }
+  .badge-pill .n { color: #888; font-weight: 400; }
+
+  .period-picker { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .period-picker .tag { font-weight: 700; font-size: 13px; padding: 3px 10px; border-radius: 6px; color: #fff; }
+  .period-picker .tag.a { background: var(--violet); }
+  .period-picker .tag.b { background: var(--dark); }
+
+  .granularity-toggle { display: flex; gap: 8px; margin-bottom: 12px; }
+
+  table.cmp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  table.cmp-table th, table.cmp-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: right; white-space: nowrap; }
+  table.cmp-table th:first-child, table.cmp-table td:first-child { text-align: left; white-space: normal; max-width: 240px; }
+  table.cmp-table th { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; background: #FAFAFA; position: sticky; top: 0; }
+  table.cmp-table tbody tr:hover { background: #FAFAFA; }
+  .cmp-table .up { color: #1E9E4E; }
+  .cmp-table .down { color: var(--red); }
+  .table-scroll { overflow-x: auto; }
+
+  .empty-state { padding: 30px; text-align: center; color: #999; font-size: 14px; background: #FAFAFA; border-radius: 8px; }
 </style>
 </head>
 <body>
@@ -816,6 +937,22 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="kpis" id="kpis"></div>
 <main>
+
+  <section class="card">
+    <h2>Résumé compte</h2>
+    <div class="sub">Spend, Clics, Achats, ROAS sur la période sélectionnée (filtre ci-dessus), comparés à la période N-1 (même durée, immédiatement précédente).</div>
+    <div class="kpis-compare" id="kpis-compare"></div>
+    <div class="reco-caption" id="resume-caption"></div>
+  </section>
+
+  <section class="card">
+    <h2>Synthèse créative</h2>
+    <div class="sub">Mix de formats (spend) et volume de créas par format, sur la période et le persona sélectionnés.</div>
+    <div id="chart-format-mix" class="chart" style="height:150px"></div>
+    <div id="chart-format-volume" class="chart" style="height:320px"></div>
+    <div class="badges-grid" id="top5-badges"></div>
+    <div class="reco-caption">"Top produits" = Gamme (SUN, KIDS, READING...). "Top angles" = Collection/Ligne créative, faute de segment "angle" dédié dans la nomenclature.</div>
+  </section>
 
   <section class="card">
     <h2>Vue Marché</h2>
@@ -889,6 +1026,41 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
+  <section class="card">
+    <h2>CPMR (CPM x Fréquence) &amp; CPA dans le temps</h2>
+    <div class="sub">Marchés FR / US / UK (détection large dans le nom de campagne). Barres CPMR groupées par marché, courbe CPA (axe secondaire) sur l'ensemble FR+US+UK.</div>
+    <div class="granularity-toggle">
+      <button class="preset-btn active" data-gran="day">Jour</button>
+      <button class="preset-btn" data-gran="week">Semaine</button>
+    </div>
+    <div id="chart-cpmr" class="chart"></div>
+    <div class="reco-caption">CPM et CPA recalculés à partir de Cost/Impressions/Achats (agrégation exacte). Fréquence agrégée en moyenne pondérée par les impressions (approximation usuelle en l'absence de la métrique Reach).</div>
+  </section>
+
+  <section class="card">
+    <h2>Whitelisting vs total</h2>
+    <div class="sub">% du spend des campagnes "whitelisting" (détection insensible à la casse dans le nom de campagne) vs spend total, sur la période sélectionnée.</div>
+    <div id="whitelisting-box"></div>
+  </section>
+
+  <section class="card">
+    <h2>Spend par landing page</h2>
+    <div class="sub">Agrégation du spend par landing page (destination URL), sur la période sélectionnée.</div>
+    <div id="landing-page-box"></div>
+  </section>
+
+  <section class="card">
+    <h2>Comparaison campagne (période personnalisée)</h2>
+    <div class="sub">2 périodes libres et indépendantes - Impressions, Clics, CTR, Add to cart, Taux d'ATC, Achats, Valeur de conversion, ROAS par campagne.</div>
+    <div class="period-picker">
+      <span class="tag a">Période A</span>
+      <input type="date" id="cmp-a-start"><span>&rarr;</span><input type="date" id="cmp-a-end">
+      <span class="tag b" style="margin-left:18px">Période B</span>
+      <input type="date" id="cmp-b-start"><span>&rarr;</span><input type="date" id="cmp-b-end">
+    </div>
+    <div class="table-scroll"><table class="cmp-table" id="cmp-table"></table></div>
+  </section>
+
 </main>
 <footer>Source : Supermetrics -> Facebook Ads (IZIPIZI FRANCE, act_10151142776889200) - Achats Website (attribution par défaut du compte) - Généré automatiquement</footer>
 
@@ -908,7 +1080,14 @@ const AD_NAMES = DATA.daily.ad_names;
 const FM = { date:0, market:1, cost:2, purchases:3, conv_value:4 };
 const MARKET_RAW = DATA.market_daily.rows;
 
+// Campaign-level rows (extended metrics): [date, campaign_idx, cost, purchases,
+// conv_value, impressions, clicks, add_to_cart, frequency, market_loose, whitelisting]
+const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10 };
+const CAMPAIGN_RAW = DATA.campaign_daily.rows;
+const CAMPAIGN_NAMES = DATA.campaign_daily.campaign_names;
+
 function euros(x) { return x.toLocaleString('fr-FR', {maximumFractionDigits:0}) + " €"; }
+function intFr(x) { return Math.round(x).toLocaleString('fr-FR'); }
 
 // ---- Recos + ideas (static, from full-period data) ----
 ["market","persona","format","gamme","collection","coloris","concept","prix"].forEach(key => {
@@ -1229,6 +1408,363 @@ function prixChart(data) {
   }, {responsive:true, displaylogo:false});
 }
 
+// ---------------------------------------------------------------------------
+// Section 1 - Résumé compte : global account KPIs (Spend/Clics/Achats/ROAS)
+// on the shared date filter above, vs an auto-computed N-1 period (same
+// duration, immediately preceding). Deliberately account-wide (all campaigns,
+// not filtered by the persona pill, which only applies to the creative
+// sections below).
+// ---------------------------------------------------------------------------
+function campaignRowsInRange(start, end) {
+  return CAMPAIGN_RAW.filter(r => r[FC.date] >= start && r[FC.date] <= end);
+}
+
+function accountAgg(rows) {
+  let spend = 0, clicks = 0, purchases = 0, value = 0;
+  for (const r of rows) {
+    spend += r[FC.cost]; clicks += r[FC.clicks]; purchases += r[FC.purchases]; value += r[FC.conv_value];
+  }
+  return { spend, clicks, purchases, roas: spend > 0 ? value / spend : 0 };
+}
+
+// N-1 = same duration, immediately preceding the selected period. Clamped to
+// the embedded data window's start (data_min); if the full N-1 period falls
+// entirely before that window, comparison is unavailable (shown as N/A rather
+// than fabricated/zero).
+function prevPeriodRange(start, end) {
+  const s = new Date(start + "T00:00:00Z"), e = new Date(end + "T00:00:00Z");
+  const days = Math.round((e - s) / 86400000) + 1;
+  const prevEnd = new Date(s.getTime() - 86400000);
+  const prevStart = new Date(prevEnd.getTime() - (days - 1) * 86400000);
+  const minDate = new Date(DATA.campaign_daily.date_min + "T00:00:00Z");
+  if (prevEnd < minDate) return { start: null, end: null, valid: false };
+  const clampedStart = prevStart < minDate ? minDate : prevStart;
+  return {
+    start: clampedStart.toISOString().slice(0, 10),
+    end: prevEnd.toISOString().slice(0, 10),
+    valid: prevStart >= minDate,
+  };
+}
+
+function deltaBlock(curVal, prevVal, fmt) {
+  if (prevVal === null || prevVal === undefined) {
+    return '<div class="delta na">N-1 indisponible</div>';
+  }
+  const diff = curVal - prevVal;
+  const pct = prevVal !== 0 ? (diff / prevVal * 100) : (curVal > 0 ? 100 : 0);
+  const cls = diff >= 0 ? "up" : "down";
+  const sign = diff >= 0 ? "+" : "";
+  return `<div class="delta ${cls}">${sign}${fmt(diff)} (${sign}${pct.toFixed(1)}%)</div>`;
+}
+
+function renderKpisCompare() {
+  const start = dateStartEl.value, end = dateEndEl.value;
+  const cur = accountAgg(campaignRowsInRange(start, end));
+  const prevRange = prevPeriodRange(start, end);
+  const prev = prevRange.start ? accountAgg(campaignRowsInRange(prevRange.start, prevRange.end)) : null;
+
+  const metrics = [
+    ["Spend", cur.spend, prev ? prev.spend : null, euros],
+    ["Clics", cur.clicks, prev ? prev.clicks : null, intFr],
+    ["Achats", cur.purchases, prev ? prev.purchases : null, intFr],
+    ["ROAS", cur.roas, prev ? prev.roas : null, x => x.toFixed(2) + "x"],
+  ];
+  document.getElementById("kpis-compare").innerHTML = metrics.map(([label, curV, prevV, fmt]) => `
+    <div class="kpi-compare">
+      <div class="label">${label}</div>
+      <div class="value">${fmt(curV)}</div>
+      ${deltaBlock(curV, prevV, fmt)}
+    </div>`).join("");
+
+  const caption = document.getElementById("resume-caption");
+  if (prevRange.valid) {
+    caption.textContent = `Période N-1 : ${prevRange.start} \u2192 ${prevRange.end} (même durée, immédiatement précédente).`;
+  } else if (prevRange.start) {
+    caption.textContent = `Période N-1 tronquée par la fenêtre de données embarquée (disponible à partir du ${DATA.campaign_daily.date_min}) : ${prevRange.start} \u2192 ${prevRange.end}.`;
+  } else {
+    caption.textContent = `Période N-1 indisponible : entièrement hors de la fenêtre de données embarquée (à partir du ${DATA.campaign_daily.date_min}).`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Section 2 - Synthèse créative : format mix (spend, macro-grouped Video/
+// Image/Carousel via DATA.format_macro_map) + ad volume by fine-grained
+// format, + top 5 badges per category (ad-level data, respects date+persona
+// filters like the other creative sections).
+// ---------------------------------------------------------------------------
+function renderFormatMix(rows) {
+  const buckets = new Map();
+  let total = 0;
+  for (const r of rows) {
+    const fmt = r[F.format];
+    const macro = fmt && DATA.format_macro_map[fmt];
+    if (!macro) continue;
+    buckets.set(macro, (buckets.get(macro) || 0) + r[F.cost]);
+    total += r[F.cost];
+  }
+  const order = ["Video", "Image", "Carousel"];
+  const colors = { Video: VIOLET, Image: DARK, Carousel: "#FFA733" };
+  if (total <= 0) { Plotly.react("chart-format-mix", [], {}); return; }
+  const traces = order.filter(o => buckets.has(o)).map(o => ({
+    type: "bar", orientation: "h", name: o,
+    x: [buckets.get(o)], y: ["Mix"],
+    marker: { color: colors[o] },
+    text: [`${o} : ${(buckets.get(o) / total * 100).toFixed(0)}% (${euros(buckets.get(o))})`],
+    textposition: "inside", hoverinfo: "text",
+  }));
+  Plotly.react("chart-format-mix", traces, {
+    barmode: "stack", margin: { l: 60, r: 20, t: 10, b: 30 },
+    xaxis: { visible: false }, showlegend: true, legend: { orientation: "h", y: -0.4 },
+  }, { responsive: true, displaylogo: false });
+}
+
+function renderFormatVolume(rows) {
+  const agg = aggregateJS(rows, "format");
+  Plotly.react("chart-format-volume", [{
+    type: "bar", orientation: "h",
+    x: agg.map(d => d.n_ads).reverse(),
+    y: agg.map(d => d.label).reverse(),
+    marker: { color: VIOLET },
+  }], {
+    margin: { l: 200, r: 20, t: 10, b: 50 },
+    xaxis: { title: "Nombre de créas" },
+  }, { responsive: true, displaylogo: false });
+}
+
+// "Top angles"/"Top produits" have no dedicated nomenclature segment - mapped
+// to the closest existing fields (collection / gamme respectively), disclosed
+// via the section's caption.
+function renderTop5Badges(rows) {
+  const cats = [
+    ["Top personas", "persona"], ["Top formats", "format"], ["Top concepts", "concept"],
+    ["Top produits", "gamme"], ["Top angles", "collection"],
+  ];
+  document.getElementById("top5-badges").innerHTML = cats.map(([title, field]) => {
+    const top5 = aggregateJS(rows, field).slice(0, 5);
+    const pills = top5.map(d => `<span class="badge-pill">${d.label} <span class="n">${d.roas.toFixed(2)}x</span></span>`).join("");
+    return `<div><div class="badge-col-title">${title}</div>${pills || '<span class="n">—</span>'}</div>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Section 3 - CPMR (CPM x Fréquence) + CPA overlay, FR/US/UK, day/week toggle.
+// CPM and CPA are recomputed from additive raw sums (cost/impressions/
+// purchases) so grouping across campaigns/days is mathematically exact.
+// Frequency has no additive raw equivalent available (would need Reach), so
+// it's combined via an impression-weighted average - a standard, documented
+// approximation, not a fabricated number.
+// ---------------------------------------------------------------------------
+let cpmrGranularity = "day";
+
+function cpmrBucketKey(dateStr, granularity) {
+  if (granularity === "day") return dateStr;
+  const d = new Date(dateStr + "T00:00:00Z");
+  const day = d.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  return new Date(d.getTime() + diff * 86400000).toISOString().slice(0, 10);
+}
+
+function cpmrBucketAgg(rows, granularity) {
+  const buckets = new Map();
+  const bucketSet = new Set();
+  for (const r of rows) {
+    const mkt = r[FC.market_loose];
+    if (!mkt) continue;
+    const bKey = cpmrBucketKey(r[FC.date], granularity);
+    bucketSet.add(bKey);
+    const key = bKey + "|" + mkt;
+    if (!buckets.has(key)) buckets.set(key, { cost: 0, impressions: 0, purchases: 0, freqImpSum: 0 });
+    const b = buckets.get(key);
+    b.cost += r[FC.cost];
+    b.impressions += r[FC.impressions];
+    b.purchases += r[FC.purchases];
+    b.freqImpSum += r[FC.frequency] * r[FC.impressions];
+  }
+  const buckets_sorted = Array.from(bucketSet).sort();
+  const markets = ["FR", "US", "UK"];
+  const series = {};
+  for (const m of markets) {
+    series[m] = buckets_sorted.map(bk => {
+      const b = buckets.get(bk + "|" + m);
+      if (!b || b.impressions <= 0) return null;
+      return (b.cost / b.impressions * 1000) * (b.freqImpSum / b.impressions);
+    });
+  }
+  const cpaSeries = buckets_sorted.map(bk => {
+    let cost = 0, purchases = 0;
+    for (const m of markets) {
+      const b = buckets.get(bk + "|" + m);
+      if (b) { cost += b.cost; purchases += b.purchases; }
+    }
+    return purchases > 0 ? cost / purchases : null;
+  });
+  return { buckets: buckets_sorted, series, cpaSeries };
+}
+
+function renderCPMRChart() {
+  const rows = campaignRowsInRange(dateStartEl.value, dateEndEl.value);
+  const { buckets, series, cpaSeries } = cpmrBucketAgg(rows, cpmrGranularity);
+  if (!buckets.length) { Plotly.react("chart-cpmr", [], {}); return; }
+  const marketColors = { FR: VIOLET, US: "#FF4444", UK: DARK };
+  const marketLabels = { FR: "France", US: "USA", UK: "UK" };
+  const traces = ["FR", "US", "UK"].map(m => ({
+    type: "bar", name: marketLabels[m], x: buckets, y: series[m], marker: { color: marketColors[m] }, yaxis: "y",
+  }));
+  traces.push({
+    type: "scatter", mode: "lines+markers", name: "CPA (FR+US+UK)",
+    x: buckets, y: cpaSeries, yaxis: "y2", line: { color: "#FFA733", width: 2 },
+  });
+  Plotly.react("chart-cpmr", traces, {
+    margin: { l: 60, r: 60, t: 10, b: 70 },
+    barmode: "group",
+    xaxis: { tickangle: -45 },
+    yaxis: { title: "CPMR" },
+    yaxis2: { title: "CPA (€)", overlaying: "y", side: "right" },
+    legend: { orientation: "h", y: -0.35 },
+  }, { responsive: true, displaylogo: false });
+}
+
+document.querySelectorAll(".granularity-toggle .preset-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".granularity-toggle .preset-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    cpmrGranularity = btn.dataset.gran;
+    renderCPMRChart();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section 4 - Whitelisting vs total spend, on the shared date filter. Always
+// rendered (0%/empty state included) per explicit user requirement.
+// ---------------------------------------------------------------------------
+function renderWhitelisting() {
+  const rows = campaignRowsInRange(dateStartEl.value, dateEndEl.value);
+  let total = 0, wl = 0;
+  const wlCampaigns = new Set();
+  for (const r of rows) {
+    total += r[FC.cost];
+    if (r[FC.whitelisting]) { wl += r[FC.cost]; wlCampaigns.add(CAMPAIGN_NAMES[r[FC.campaign_idx]]); }
+  }
+  const pct = total > 0 ? (wl / total * 100) : 0;
+  const box = document.getElementById("whitelisting-box");
+  if (wlCampaigns.size === 0) {
+    box.innerHTML = `<div class="empty-state">Aucune campagne "whitelisting" détectée sur la période sélectionnée (0% du spend, ${euros(total)} au total).</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="kpis-compare">
+      <div class="kpi-compare"><div class="label">Spend whitelisting</div><div class="value">${euros(wl)}</div></div>
+      <div class="kpi-compare"><div class="label">Spend total</div><div class="value">${euros(total)}</div></div>
+      <div class="kpi-compare"><div class="label">% whitelisting</div><div class="value">${pct.toFixed(1)}%</div></div>
+    </div>
+    <div class="reco-caption">Campagnes détectées : ${Array.from(wlCampaigns).map(n => `<b>${n}</b>`).join(", ")}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Section 5 - Spend par landing page (Destination URL). The Supermetrics
+// query for this dimension did not complete in a reasonable time for this
+// account (retried with several field candidates); rendered as an honest
+// "unavailable" state rather than fabricated numbers.
+// ---------------------------------------------------------------------------
+function renderLandingPage() {
+  document.getElementById("landing-page-box").innerHTML =
+    `<div class="empty-state">Donnée "landing page" (Destination URL, Supermetrics) indisponible pour le moment : la requête n'a pas abouti dans un délai raisonnable pour ce compte. Cette section sera peuplée dès que la remontée aboutira (à réessayer via la tâche planifiée).</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Section 6 - Comparaison campagne : 2 free/independent date ranges, per
+// campaign Impressions/Clics/CTR/ATC/Taux ATC/Achats/Valeur de conversion/
+// ROAS with absolute + % delta (A -> B).
+// ---------------------------------------------------------------------------
+function computeCampaignMetrics(rows) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const idx = r[FC.campaign_idx];
+    if (!buckets.has(idx)) buckets.set(idx, { impressions: 0, clicks: 0, purchases: 0, conv_value: 0, add_to_cart: 0, cost: 0 });
+    const b = buckets.get(idx);
+    b.impressions += r[FC.impressions]; b.clicks += r[FC.clicks]; b.purchases += r[FC.purchases];
+    b.conv_value += r[FC.conv_value]; b.add_to_cart += r[FC.add_to_cart]; b.cost += r[FC.cost];
+  }
+  const out = new Map();
+  for (const [idx, b] of buckets) {
+    out.set(idx, {
+      impressions: b.impressions, clicks: b.clicks,
+      ctr: b.impressions > 0 ? b.clicks / b.impressions * 100 : 0,
+      add_to_cart: b.add_to_cart,
+      taux_atc: b.clicks > 0 ? b.add_to_cart / b.clicks * 100 : 0,
+      purchases: b.purchases, conv_value: b.conv_value,
+      roas: b.cost > 0 ? b.conv_value / b.cost : 0,
+      cost: b.cost,
+    });
+  }
+  return out;
+}
+
+const CMP_COLS = [
+  ["Impressions", "impressions", intFr],
+  ["Clics", "clicks", intFr],
+  ["CTR", "ctr", v => v.toFixed(2) + "%"],
+  ["Add to cart", "add_to_cart", intFr],
+  ["Taux d'ATC", "taux_atc", v => v.toFixed(2) + "%"],
+  ["Achats", "purchases", intFr],
+  ["Valeur de conversion", "conv_value", euros],
+  ["ROAS", "roas", v => v.toFixed(2) + "x"],
+];
+const CMP_ZERO = { impressions: 0, clicks: 0, ctr: 0, add_to_cart: 0, taux_atc: 0, purchases: 0, conv_value: 0, roas: 0, cost: 0 };
+
+function renderComparisonTable() {
+  const aStart = document.getElementById("cmp-a-start").value, aEnd = document.getElementById("cmp-a-end").value;
+  const bStart = document.getElementById("cmp-b-start").value, bEnd = document.getElementById("cmp-b-end").value;
+  const table = document.getElementById("cmp-table");
+  if (!aStart || !aEnd || !bStart || !bEnd) { table.innerHTML = ""; return; }
+
+  const metricsA = computeCampaignMetrics(campaignRowsInRange(aStart, aEnd));
+  const metricsB = computeCampaignMetrics(campaignRowsInRange(bStart, bEnd));
+  const allIdx = new Set([...metricsA.keys(), ...metricsB.keys()]);
+
+  const rows = Array.from(allIdx).map(idx => {
+    const a = metricsA.get(idx) || CMP_ZERO, b = metricsB.get(idx) || CMP_ZERO;
+    return { name: CAMPAIGN_NAMES[idx], a, b, sortKey: Math.max(a.cost, b.cost) };
+  }).sort((x, y) => y.sortKey - x.sortKey);
+
+  const thead = "<thead><tr><th>Campagne</th>" +
+    CMP_COLS.map(([label]) => `<th>${label}<br><span style="font-weight:400">A &rarr; B (&Delta;%)</span></th>`).join("") +
+    "</tr></thead>";
+  const tbody = "<tbody>" + rows.map(r => {
+    const cells = CMP_COLS.map(([, key, fmt]) => {
+      const av = r.a[key], bv = r.b[key];
+      const diff = bv - av;
+      const pct = av !== 0 ? (diff / av * 100) : (bv > 0 ? 100 : 0);
+      const cls = diff >= 0 ? "up" : "down";
+      const sign = diff >= 0 ? "+" : "";
+      return `<td>${fmt(av)} &rarr; ${fmt(bv)} <span class="${cls}">(${sign}${pct.toFixed(1)}%)</span></td>`;
+    }).join("");
+    return `<tr><td>${r.name}</td>${cells}</tr>`;
+  }).join("") + "</tbody>";
+
+  table.innerHTML = thead + tbody;
+}
+
+const cmpAStart = document.getElementById("cmp-a-start"), cmpAEnd = document.getElementById("cmp-a-end");
+const cmpBStart = document.getElementById("cmp-b-start"), cmpBEnd = document.getElementById("cmp-b-end");
+[cmpAStart, cmpAEnd, cmpBStart, cmpBEnd].forEach(el => {
+  el.min = DATA.campaign_daily.date_min; el.max = DATA.campaign_daily.date_max;
+});
+(function initCmpDefaults() {
+  const end = DATA.campaign_daily.date_max;
+  const endDate = new Date(end + "T00:00:00Z");
+  const aStartDate = new Date(endDate.getTime() - 6 * 86400000);
+  const bEndDate = new Date(aStartDate.getTime() - 86400000);
+  const bStartDate = new Date(bEndDate.getTime() - 6 * 86400000);
+  const minDate = new Date(DATA.campaign_daily.date_min + "T00:00:00Z");
+  const clamp = d => (d < minDate ? minDate : d);
+  cmpAStart.value = clamp(aStartDate).toISOString().slice(0, 10);
+  cmpAEnd.value = end;
+  cmpBStart.value = clamp(bStartDate).toISOString().slice(0, 10);
+  cmpBEnd.value = bEndDate.toISOString().slice(0, 10);
+})();
+[cmpAStart, cmpAEnd, cmpBStart, cmpBEnd].forEach(el => el.addEventListener("change", renderComparisonTable));
+
 function update() {
   const dateRows = rowsInDateRange();
   const rows = filteredRows();
@@ -1238,6 +1774,10 @@ function update() {
     `Période sélectionnée : ${start} \u2192 ${end} | Persona : ${currentPersona} | (fenêtre glissante disponible : ${DATA.daily.date_min} \u2192 ${DATA.daily.date_max})`;
 
   renderKPIs(rows);
+  renderKpisCompare();
+  renderFormatMix(rows);
+  renderFormatVolume(rows);
+  renderTop5Badges(rows);
   marketBarChart(aggregateMarketJS(marketRowsInDateRange()));
   renderPersonaChart(dateRows);
   bubbleChart("chart-format", aggregateJS(rows, "format"));
@@ -1246,8 +1786,12 @@ function update() {
   barChart("chart-coloris", aggregateJS(rows, "coloris").slice(0, 12), "roas", false, "metric");
   bubbleChart("chart-concept", aggregateJS(rows, "concept").slice(0, 12));
   prixChart(aggregateJS(rows, "prix"));
+  renderCPMRChart();
+  renderWhitelisting();
 }
 
+renderLandingPage();
+renderComparisonTable();
 update();
 </script>
 </body>
