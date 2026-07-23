@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-IZIPIZI Meta Ads - Creative Performance Dashboard builder.
+IZIPIZI Meta Ads - Creative Performance Dashboard builder (v2).
 
-Reads data_raw.csv (ad_name, cost, purchases, conv_value from Supermetrics
-Facebook Ads, "Website purchases" attribution), parses the internal creative
-nomenclature out of each ad_name, aggregates spend / ROAS / CPA per
-nomenclature variable, and renders dashboard.html (Plotly.js, no build step).
+Two data sources:
+  - data_raw.csv   : ad-level totals since Jan 1st (ad_name, cost, purchases,
+                      conv_value). Used ONLY to compute the STABLE
+                      recommendations + ideation bullets (server-side, once
+                      per run) so they never move because of client-side
+                      date-range / persona filtering.
+  - data_daily.csv  : per-ad, per-day rows for a rolling 90-day window
+                      (date, ad_name, cost, purchases, conv_value). Embedded
+                      client-side so the browser can filter by date range
+                      (7j/30j/90j presets) and by persona, recomputing every
+                      chart and KPI on the fly.
 
 Nomenclature (client-defined):
 [DATE] - [FORMAT] - [CIBLE/PERSONA] - [GAMME] - [COLLECTION] - [COLORIS] -
@@ -23,6 +30,7 @@ from collections import defaultdict
 
 ROOT = Path(__file__).parent
 CSV_PATH = ROOT / "data_raw.csv"
+DAILY_CSV_PATH = ROOT / "data_daily.csv"
 OUT_PATH = ROOT / "dashboard.html"
 
 # ---------------------------------------------------------------------------
@@ -210,6 +218,7 @@ def parse_ad(name):
 # ---------------------------------------------------------------------------
 
 def load_rows():
+    """Ad-level totals since Jan 1st (data_raw.csv) - used for stable reco/ideation."""
     rows = []
     with open(CSV_PATH, encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -228,8 +237,29 @@ def load_rows():
     return rows
 
 
+def load_daily_rows():
+    """Per-ad, per-day rows (data_daily.csv) - used for the interactive charts."""
+    rows = []
+    with open(DAILY_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            cost = float(r["cost"] or 0)
+            purchases = float(r["purchases"] or 0)
+            conv_value = float(r["conv_value"] or 0)
+            parsed = parse_ad(r["ad_name"])
+            rows.append({
+                "date": r["date"],
+                "ad_name": r["ad_name"],
+                "cost": cost,
+                "purchases": purchases,
+                "conv_value": conv_value,
+                **parsed,
+            })
+    return rows
+
+
 def aggregate(rows, field):
-    buckets = defaultdict(lambda: {"spend": 0.0, "value": 0.0, "purchases": 0.0, "n_ads": 0})
+    buckets = defaultdict(lambda: {"spend": 0.0, "value": 0.0, "purchases": 0.0, "ads": set()})
     for r in rows:
         key = r[field]
         if not key:
@@ -238,7 +268,7 @@ def aggregate(rows, field):
         b["spend"] += r["cost"]
         b["value"] += r["conv_value"]
         b["purchases"] += r["purchases"]
-        b["n_ads"] += 1
+        b["ads"].add(r.get("ad_name", key))
     out = []
     for key, b in buckets.items():
         roas = (b["value"] / b["spend"]) if b["spend"] > 0 else 0
@@ -248,7 +278,7 @@ def aggregate(rows, field):
             "spend": round(b["spend"], 2),
             "value": round(b["value"], 2),
             "purchases": round(b["purchases"], 1),
-            "n_ads": b["n_ads"],
+            "n_ads": len(b["ads"]),
             "roas": round(roas, 2),
             "cpa": round(cpa, 2) if cpa is not None else None,
         })
@@ -262,7 +292,9 @@ def coverage(rows, field):
 
 
 # ---------------------------------------------------------------------------
-# Recommendations (rule-based, recomputed from current data every run)
+# Recommendations (rule-based, computed ONCE from the full since-Jan-1
+# dataset - deliberately decoupled from the client-side date/persona
+# filters so the text stays stable day to day).
 # ---------------------------------------------------------------------------
 
 def fmt_eur(x):
@@ -372,8 +404,136 @@ def reco_prix(agg):
 
 
 # ---------------------------------------------------------------------------
+# Ideation bullets (3 per chart, stable - same source data as the reco above)
+# ---------------------------------------------------------------------------
+
+def ideas_persona(agg):
+    if not agg:
+        return []
+    ranked = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Décliner <b>{best['label']}</b> en 2-3 nouveaux formats courts (UGC + Motion) pour capitaliser sur son ROAS.",
+        f"Retravailler <b>{worst['label']}</b> avec le style créatif (cadrage, accroche, montage) qui fonctionne pour <b>{best['label']}</b>.",
+        f"Tester une nouvelle déclinaison produit/collection sur le persona <b>{best['label']}</b> pour vérifier la scalabilité de sa performance.",
+    ]
+
+
+def ideas_format(agg):
+    if not agg:
+        return []
+    ranked = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Produire 2-3 nouvelles versions du format <b>{best['label']}</b> sur d'autres personas/gammes pour dupliquer sa performance.",
+        f"Tester une version courte (6-10s) ou un montage plus dynamique du format <b>{worst['label']}</b> pour challenger son ROAS.",
+        f"Croiser les codes du format <b>{best['label']}</b> (rythme, texte à l'écran, accroche) avec un concept créatif différent.",
+    ]
+
+
+def ideas_gamme(agg):
+    if not agg:
+        return []
+    ranked = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Prioriser le prochain shooting produit sur la gamme <b>{best['label']}</b>, moteur de performance actuel.",
+        f"Tester un nouvel angle créatif (usage, mise en situation) pour relancer la gamme <b>{worst['label']}</b>.",
+        f"Décliner un mini-plan média dédié à <b>{best['label']}</b> avec 2-3 nouveaux visuels pour confirmer la tendance.",
+    ]
+
+
+def ideas_collection(agg):
+    ranked = sorted([b for b in agg if b["cpa"] is not None], key=lambda x: x["cpa"])
+    if not ranked:
+        return []
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Renouveler 2-3 créas sur la collection <b>{best['label']}</b> (meilleur CPA) pour prolonger sa dynamique.",
+        f"Retester la collection <b>{worst['label']}</b> avec un nouveau format ou un nouveau prix affiché avant de réduire son budget.",
+        f"Croiser <b>{best['label']}</b> avec un persona ou une gamme peu exploités pour élargir son audience.",
+    ]
+
+
+def ideas_coloris(agg):
+    if not agg:
+        return []
+    ranked = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Décliner le coloris <b>{best['label']}</b> sur d'autres montures/collections encore non testées.",
+        f"Retravailler le visuel du coloris <b>{worst['label']}</b> (fond, lumière, mise en situation).",
+        f"Prévoir un carrousel dédié mettant en avant les coloris les plus performants dont <b>{best['label']}</b>.",
+    ]
+
+
+def ideas_concept(agg):
+    if not agg:
+        return []
+    ranked = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Dupliquer le concept <b>{best['label']}</b> sur de nouveaux produits/collections à venir.",
+        f"Refaire le concept <b>{worst['label']}</b> avec un nouveau talent/mise en scène avant de l'abandonner.",
+        f"Tester un hybride entre <b>{best['label']}</b> et un autre concept fort pour renouveler le stock créatif.",
+    ]
+
+
+def ideas_prix(agg):
+    by_label = {b["label"]: b for b in agg}
+    avec, sans = by_label.get("Avec prix"), by_label.get("Sans prix")
+    if not avec or not sans:
+        return []
+    winner = avec["label"] if avec["roas"] >= sans["roas"] else sans["label"]
+    loser = sans["label"] if winner == avec["label"] else avec["label"]
+    return [
+        f"Généraliser l'affichage \"{winner.lower()}\" sur les prochaines déclinaisons carrousel/image.",
+        f"Garder un test A/B minoritaire (10-20% du budget) sur \"{loser.lower()}\" pour ne pas perdre le signal.",
+        f"Tester une variante intermédiaire (prix barré / prix promo) pour voir si elle capte le meilleur des deux approches.",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
+
+def build_daily_payload():
+    daily_rows = load_daily_rows()
+
+    ad_names = sorted({r["ad_name"] for r in daily_rows})
+    ad_index = {name: i for i, name in enumerate(ad_names)}
+
+    compact_rows = []
+    for r in daily_rows:
+        compact_rows.append([
+            r["date"],
+            ad_index[r["ad_name"]],
+            round(r["cost"], 2),
+            round(r["purchases"], 1),
+            round(r["conv_value"], 2),
+            r["persona"],
+            r["format"],
+            r["gamme"],
+            r["collection"],
+            r["coloris"],
+            r["concept"],
+            r["prix"],
+        ])
+
+    dates = sorted({r["date"] for r in daily_rows})
+    persona_order = [p["label"] for p in aggregate(daily_rows, "persona")]
+
+    return {
+        "ad_names": ad_names,
+        "field_order": ["date", "ad_idx", "cost", "purchases", "conv_value",
+                         "persona", "format", "gamme", "collection", "coloris",
+                         "concept", "prix"],
+        "rows": compact_rows,
+        "date_min": dates[0] if dates else None,
+        "date_max": dates[-1] if dates else None,
+        "persona_order": persona_order,
+    }
+
 
 def main():
     rows = load_rows()
@@ -387,6 +547,8 @@ def main():
     coloris_agg = aggregate(rows, "coloris")
     concept_agg = aggregate(rows, "concept")
     prix_agg = aggregate(rows, "prix")
+
+    daily = build_daily_payload()
 
     payload = {
         "meta": {
@@ -406,13 +568,6 @@ def main():
                 "prix": coverage(rows, "prix"),
             },
         },
-        "persona": persona_agg,
-        "format": format_agg,
-        "gamme": gamme_agg,
-        "collection": collection_agg[:12],
-        "coloris": coloris_agg[:12],
-        "concept": concept_agg[:12],
-        "prix": prix_agg,
         "reco": {
             "persona": reco_persona(persona_agg, avg_roas),
             "format": reco_bubble(format_agg, avg_roas, "Format"),
@@ -422,11 +577,25 @@ def main():
             "concept": reco_bubble(concept_agg[:12], avg_roas, "Concept"),
             "prix": reco_prix(prix_agg),
         },
+        "ideas": {
+            "persona": ideas_persona(persona_agg),
+            "format": ideas_format(format_agg),
+            "gamme": ideas_gamme(gamme_agg),
+            "collection": ideas_collection(collection_agg[:12]),
+            "coloris": ideas_coloris(coloris_agg[:12]),
+            "concept": ideas_concept(concept_agg[:12]),
+            "prix": ideas_prix(prix_agg),
+        },
+        "daily": daily,
     }
 
     html = HTML_TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False))
     OUT_PATH.write_text(html, encoding="utf-8")
-    print(f"Wrote {OUT_PATH} ({len(rows)} ads, spend={fmt_eur(total_spend)}, ROAS moyen={avg_roas:.2f}x)")
+    print(
+        f"Wrote {OUT_PATH} ({len(rows)} ads since Jan 1, spend={fmt_eur(total_spend)}, "
+        f"ROAS moyen={avg_roas:.2f}x | daily window {daily['date_min']} -> {daily['date_max']}, "
+        f"{len(daily['rows'])} rows, {len(daily['ad_names'])} ads)"
+    )
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -443,6 +612,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   header { background: var(--dark); color: #fff; padding: 28px 32px; }
   header h1 { margin: 0 0 6px 0; font-size: 22px; }
   header p { margin: 0; color: #bbb; font-size: 14px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; padding: 16px 32px; background: #fff; border-bottom: 1px solid #eee; position: sticky; top: 0; z-index: 5; }
+  .filter-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .filter-group label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+  .preset-btn, .persona-pill { border: 1px solid #ddd; background: #fff; border-radius: 20px; padding: 6px 14px; font-size: 13px; cursor: pointer; color: var(--dark); transition: all .15s; }
+  .preset-btn:hover, .persona-pill:hover { border-color: var(--violet); }
+  .preset-btn.active, .persona-pill.active { background: var(--violet); border-color: var(--violet); color: #fff; }
+  input[type=date] { border: 1px solid #ddd; border-radius: 8px; padding: 5px 8px; font-size: 13px; }
   .kpis { display: flex; gap: 16px; padding: 20px 32px; flex-wrap: wrap; }
   .kpi { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); min-width: 160px; }
   .kpi .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
@@ -454,6 +630,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .chart { width: 100%; height: 460px; }
   .reco { margin-top: 14px; padding: 14px 18px; background: #F1EEFF; border-left: 4px solid var(--violet); border-radius: 6px; font-size: 14px; line-height: 1.5; }
   .reco b { color: var(--violet); }
+  .reco-caption { font-size: 11px; color: #999; margin-top: 8px; font-style: italic; }
+  .ideas { margin-top: 10px; padding: 14px 18px; background: #FAFAFA; border-left: 4px solid var(--dark); border-radius: 6px; font-size: 14px; line-height: 1.6; }
+  .ideas b { color: var(--dark); }
+  .ideas ul { margin: 4px 0 0 0; padding-left: 18px; }
+  .ideas-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 700; }
   footer { text-align: center; color: #999; font-size: 12px; padding: 20px; }
 </style>
 </head>
@@ -462,14 +643,32 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <h1>IZIPIZI - Creative Performance Dashboard (Meta Ads)</h1>
   <p id="period-label"></p>
 </header>
+
+<div class="filters">
+  <div class="filter-group">
+    <label>Période</label>
+    <button class="preset-btn" data-preset="7">7j</button>
+    <button class="preset-btn" data-preset="30">30j</button>
+    <button class="preset-btn active" data-preset="90">90j</button>
+    <input type="date" id="date-start">
+    <span>&rarr;</span>
+    <input type="date" id="date-end">
+  </div>
+  <div class="filter-group" id="persona-pills">
+    <label>Persona</label>
+  </div>
+</div>
+
 <div class="kpis" id="kpis"></div>
 <main>
 
   <section class="card">
-    <h2>Persona x ROAS x Spend x Volume de créas</h2>
-    <div class="sub">Un point = un persona. X = spend, Y = ROAS, Z = nombre de créas rattachées à ce persona depuis le 01/01/2026.</div>
+    <h2>Persona x Spend x Volume de créas x ROAS</h2>
+    <div class="sub">Une montagne = un persona. X = spend, Y = volume de créas, hauteur (Z) = ROAS.</div>
     <div id="chart-persona" class="chart"></div>
     <div class="reco" id="reco-persona"></div>
+    <div class="ideas" id="ideas-persona"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
   <section class="card">
@@ -477,20 +676,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="sub">Spend x ROAS x volume de créas par type de format.</div>
     <div id="chart-format" class="chart"></div>
     <div class="reco" id="reco-format"></div>
+    <div class="ideas" id="ideas-format"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
   <section class="card">
     <h2>Gamme / Usage</h2>
-    <div class="sub">ROAS par gamme produit (SUN, READING, SCREEN, SPORT, KIDS...).</div>
+    <div class="sub">ROAS par gamme produit, triée par spend (SUN, READING, SCREEN, SPORT, KIDS...).</div>
     <div id="chart-gamme" class="chart"></div>
     <div class="reco" id="reco-gamme"></div>
+    <div class="ideas" id="ideas-gamme"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
   <section class="card">
     <h2>Collection / Ligne</h2>
-    <div class="sub">CPA (coût par achat) par collection - top 12 par spend, du plus efficace au moins efficace.</div>
+    <div class="sub">CPA (coût par achat) par collection - top 12, triée par spend.</div>
     <div id="chart-collection" class="chart"></div>
     <div class="reco" id="reco-collection"></div>
+    <div class="ideas" id="ideas-collection"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
   <section class="card">
@@ -498,6 +703,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="sub">ROAS par coloris - top 12 par spend.</div>
     <div id="chart-coloris" class="chart"></div>
     <div class="reco" id="reco-coloris"></div>
+    <div class="ideas" id="ideas-coloris"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
   <section class="card">
@@ -505,6 +712,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="sub">Spend x ROAS x volume de créas par concept de shooting/montage - top 12 par spend.</div>
     <div id="chart-concept" class="chart"></div>
     <div class="reco" id="reco-concept"></div>
+    <div class="ideas" id="ideas-concept"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
   <section class="card">
@@ -512,6 +721,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="sub">Avec prix vs Sans prix.</div>
     <div id="chart-prix" class="chart"></div>
     <div class="reco" id="reco-prix"></div>
+    <div class="ideas" id="ideas-prix"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
   </section>
 
 </main>
@@ -520,56 +731,195 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 const VIOLET = "#5A45FF";
+const DARK = "#171717";
+const GREY_OUT = "#DADADA";
 const PALETTE = ["#5A45FF","#171717","#FF4444","#9CF694","#FFB84D","#4DA1FF","#C64DFF","#4DFFD8","#FF4DA1","#B0B0B0"];
 
-document.getElementById("period-label").textContent =
-  `Période : ${DATA.meta.period} | ${DATA.meta.n_ads} ads avec spend | ${DATA.meta.total_purchases.toLocaleString('fr-FR')} achats`;
+// row field indices (see build_daily_payload in build_report.py)
+const F = { date:0, ad_idx:1, cost:2, purchases:3, conv_value:4, persona:5, format:6, gamme:7, collection:8, coloris:9, concept:10, prix:11 };
+const RAW = DATA.daily.rows;
+const AD_NAMES = DATA.daily.ad_names;
 
 function euros(x) { return x.toLocaleString('fr-FR', {maximumFractionDigits:0}) + " €"; }
 
-const kpis = document.getElementById("kpis");
-[
-  ["Spend total", euros(DATA.meta.total_spend)],
-  ["Valeur de conversion", euros(DATA.meta.total_value)],
-  ["ROAS moyen compte", DATA.meta.avg_roas + "x"],
-  ["Achats", Math.round(DATA.meta.total_purchases).toLocaleString('fr-FR')],
-].forEach(([label, value]) => {
-  const el = document.createElement("div");
-  el.className = "kpi";
-  el.innerHTML = `<div class="label">${label}</div><div class="value">${value}</div>`;
-  kpis.appendChild(el);
+// ---- Recos + ideas (static, from full-period data) ----
+["persona","format","gamme","collection","coloris","concept","prix"].forEach(key => {
+  document.getElementById("reco-" + key).innerHTML = DATA.reco[key];
+  const ideas = DATA.ideas[key] || [];
+  const box = document.getElementById("ideas-" + key);
+  if (ideas.length) {
+    box.innerHTML = '<div class="ideas-title">Idées d\'itération / idéation</div><ul>' +
+      ideas.map(i => `<li>${i}</li>`).join("") + '</ul>';
+  }
 });
 
-// ---- Persona 3D ----
-(function() {
-  const d = DATA.persona;
-  Plotly.newPlot("chart-persona", [{
-    type: "scatter3d",
-    mode: "markers+text",
-    x: d.map(p => p.spend),
-    y: d.map(p => p.roas),
-    z: d.map(p => p.n_ads),
-    text: d.map(p => p.label),
-    textposition: "top center",
-    marker: {
-      size: d.map(p => Math.max(8, Math.min(28, p.n_ads * 1.5))),
-      color: d.map((_, i) => PALETTE[i % PALETTE.length]),
-      opacity: 0.9,
-      line: { color: "#fff", width: 1 },
-    },
-  }], {
-    margin: {l:0,r:0,t:10,b:0},
-    scene: {
-      xaxis: { title: "Spend (€)" },
-      yaxis: { title: "ROAS" },
-      zaxis: { title: "Volume de créas" },
-    },
-  }, {responsive:true, displaylogo:false});
-  document.getElementById("reco-persona").innerHTML = DATA.reco.persona;
-})();
+// ---- Aggregation (mirrors Python's aggregate()) ----
+function aggregateJS(rows, fieldKey) {
+  const idx = F[fieldKey];
+  const buckets = new Map();
+  for (const r of rows) {
+    const key = r[idx];
+    if (!key) continue;
+    if (!buckets.has(key)) buckets.set(key, { spend: 0, value: 0, purchases: 0, ads: new Set() });
+    const b = buckets.get(key);
+    b.spend += r[F.cost];
+    b.value += r[F.conv_value];
+    b.purchases += r[F.purchases];
+    b.ads.add(r[F.ad_idx]);
+  }
+  const out = [];
+  for (const [label, b] of buckets) {
+    const roas = b.spend > 0 ? b.value / b.spend : 0;
+    const cpa = b.purchases > 0 ? b.spend / b.purchases : null;
+    out.push({ label, spend: b.spend, value: b.value, purchases: b.purchases, n_ads: b.ads.size, roas, cpa });
+  }
+  out.sort((a, b) => b.spend - a.spend);
+  return out;
+}
 
-function bubbleChart(divId, data, recoId, recoText) {
-  Plotly.newPlot(divId, [{
+// ---- Filter state ----
+let currentPersona = "Tous";
+const dateStartEl = document.getElementById("date-start");
+const dateEndEl = document.getElementById("date-end");
+
+dateStartEl.min = dateEndEl.min = DATA.daily.date_min;
+dateStartEl.max = dateEndEl.max = DATA.daily.date_max;
+
+function applyPreset(days) {
+  const end = DATA.daily.date_max;
+  const endDate = new Date(end + "T00:00:00Z");
+  const startDate = new Date(endDate.getTime() - (days - 1) * 86400000);
+  const minDate = new Date(DATA.daily.date_min + "T00:00:00Z");
+  const start = (startDate < minDate ? minDate : startDate).toISOString().slice(0, 10);
+  dateStartEl.value = start;
+  dateEndEl.value = end;
+}
+applyPreset(90);
+
+document.querySelectorAll(".preset-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    applyPreset(parseInt(btn.dataset.preset, 10));
+    update();
+  });
+});
+[dateStartEl, dateEndEl].forEach(el => el.addEventListener("change", () => {
+  document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+  update();
+}));
+
+// ---- Persona pills ----
+const pillsBox = document.getElementById("persona-pills");
+["Tous", ...DATA.daily.persona_order].forEach(label => {
+  const btn = document.createElement("button");
+  btn.className = "persona-pill" + (label === "Tous" ? " active" : "");
+  btn.textContent = label;
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".persona-pill").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentPersona = label;
+    update();
+  });
+  pillsBox.appendChild(btn);
+});
+
+function rowsInDateRange() {
+  const start = dateStartEl.value, end = dateEndEl.value;
+  return RAW.filter(r => r[F.date] >= start && r[F.date] <= end);
+}
+function filteredRows() {
+  const rows = rowsInDateRange();
+  if (currentPersona === "Tous") return rows;
+  return rows.filter(r => r[F.persona] === currentPersona);
+}
+
+function renderKPIs(rows) {
+  const spend = rows.reduce((s, r) => s + r[F.cost], 0);
+  const value = rows.reduce((s, r) => s + r[F.conv_value], 0);
+  const purchases = rows.reduce((s, r) => s + r[F.purchases], 0);
+  const roas = spend > 0 ? value / spend : 0;
+  const kpis = document.getElementById("kpis");
+  kpis.innerHTML = "";
+  [
+    ["Spend (période sélectionnée)", euros(spend)],
+    ["Valeur de conversion", euros(value)],
+    ["ROAS moyen", roas.toFixed(2) + "x"],
+    ["Achats", Math.round(purchases).toLocaleString('fr-FR')],
+  ].forEach(([label, val]) => {
+    const el = document.createElement("div");
+    el.className = "kpi";
+    el.innerHTML = `<div class="label">${label}</div><div class="value">${val}</div>`;
+    kpis.appendChild(el);
+  });
+}
+
+// ---- Persona "mountain" chart (cone traces, swapped axes: Y=volume, Z=ROAS) ----
+// Spend/volume/ROAS live on wildly different scales (up to ~300k€ vs ~100 créas
+// vs ~0-5x ROAS). Cone geometry (sizeref) uses the same physical units on all
+// three axes, so plotting raw values forces the ROAS axis to auto-range into
+// the tens of thousands to fit the cone bodies. Instead we normalize all three
+// axes to 0-1 and relabel ticks with the real values, so cones render with a
+// sane, comparable size while the axis labels still show true spend/volume/ROAS.
+function renderPersonaChart(dateFilteredRows) {
+  const agg = aggregateJS(dateFilteredRows, "persona");
+  if (!agg.length) { Plotly.react("chart-persona", [], {}); return; }
+  const spendMax = Math.max(...agg.map(p => p.spend), 1);
+  const nMax = Math.max(...agg.map(p => p.n_ads), 1);
+  const roasMax = Math.max(...agg.map(p => p.roas), 1);
+  const sizeref = 0.22;
+
+  const traces = agg.map((p, i) => {
+    const active = currentPersona === "Tous" || currentPersona === p.label;
+    const color = active ? PALETTE[i % PALETTE.length] : GREY_OUT;
+    const hNorm = Math.max(p.roas / roasMax, 0.05);
+    return {
+      type: "cone",
+      x: [p.spend / spendMax], y: [p.n_ads / nMax], z: [0],
+      u: [0], v: [0], w: [hNorm],
+      anchor: "tail",
+      sizemode: "absolute",
+      sizeref: sizeref,
+      showscale: false,
+      colorscale: [[0, color], [1, color]],
+      hovertemplate: `<b>${p.label}</b><br>Spend: ${euros(p.spend)}<br>Volume: ${p.n_ads} créas<br>ROAS: ${p.roas.toFixed(2)}x<extra></extra>`,
+    };
+  });
+  traces.push({
+    type: "scatter3d", mode: "text",
+    x: agg.map(p => p.spend / spendMax),
+    y: agg.map(p => p.n_ads / nMax),
+    z: agg.map(p => Math.max(p.roas / roasMax, 0.05) + 0.15),
+    text: agg.map(p => p.label),
+    textposition: "top center",
+    showlegend: false,
+    hoverinfo: "skip",
+  });
+
+  const axisTicks = (maxVal, isEuro) => {
+    const fracs = [0, 0.25, 0.5, 0.75, 1];
+    return {
+      tickvals: fracs,
+      ticktext: fracs.map(f => isEuro ? euros(f * maxVal) : Math.round(f * maxVal).toLocaleString('fr-FR')),
+    };
+  };
+
+  Plotly.react("chart-persona", traces, {
+    margin: { l: 0, r: 0, t: 10, b: 0 },
+    scene: {
+      xaxis: Object.assign({ title: "Spend (€)", range: [0, 1.05] }, axisTicks(spendMax, true)),
+      yaxis: Object.assign({ title: "Volume de créas", range: [0, 1.05] }, axisTicks(nMax, false)),
+      zaxis: Object.assign({ title: "ROAS", range: [0, 1.3] }, {
+        tickvals: [0, 0.25, 0.5, 0.75, 1],
+        ticktext: [0, 0.25, 0.5, 0.75, 1].map(f => (f * roasMax).toFixed(1) + "x"),
+      }),
+      aspectmode: "cube",
+    },
+  }, { responsive: true, displaylogo: false });
+}
+
+function bubbleChart(divId, data) {
+  Plotly.react(divId, [{
     type: "scatter",
     mode: "markers+text",
     x: data.map(d => d.spend),
@@ -587,15 +937,16 @@ function bubbleChart(divId, data, recoId, recoText) {
     xaxis: { title: "Spend (€)" },
     yaxis: { title: "ROAS" },
   }, {responsive:true, displaylogo:false});
-  document.getElementById(recoId).innerHTML = recoText;
 }
-bubbleChart("chart-format", DATA.format, "reco-format", DATA.reco.format);
-bubbleChart("chart-concept", DATA.concept, "reco-concept", DATA.reco.concept);
 
-function barChart(divId, data, recoId, recoText, metric, ascending) {
-  let sorted = [...data].filter(d => d[metric] !== null && d[metric] !== undefined);
-  sorted.sort((a,b) => ascending ? a[metric]-b[metric] : b[metric]-a[metric]);
-  Plotly.newPlot(divId, [{
+// sortMode: "spend" = keep aggregateJS's spend-descending order as-is (Gamme, Collection).
+//           "metric" = re-sort locally by the displayed metric (Coloris, unchanged behaviour).
+function barChart(divId, data, metric, ascending, sortMode) {
+  let sorted = data.filter(d => d[metric] !== null && d[metric] !== undefined);
+  if (sortMode === "metric") {
+    sorted = [...sorted].sort((a,b) => ascending ? a[metric]-b[metric] : b[metric]-a[metric]);
+  }
+  Plotly.react(divId, [{
     type: "bar",
     orientation: "h",
     x: sorted.map(d => d[metric]).reverse(),
@@ -605,23 +956,37 @@ function barChart(divId, data, recoId, recoText, metric, ascending) {
     margin: {l:260,r:20,t:10,b:50},
     xaxis: { title: metric === "roas" ? "ROAS" : "CPA (€)" },
   }, {responsive:true, displaylogo:false});
-  document.getElementById(recoId).innerHTML = recoText;
 }
-barChart("chart-gamme", DATA.gamme, "reco-gamme", DATA.reco.gamme, "roas", false);
-barChart("chart-collection", DATA.collection, "reco-collection", DATA.reco.collection, "cpa", true);
-barChart("chart-coloris", DATA.coloris, "reco-coloris", DATA.reco.coloris, "roas", false);
 
-(function() {
-  const d = DATA.prix;
-  Plotly.newPlot("chart-prix", [
-    { type:"bar", name:"ROAS", x: d.map(x=>x.label), y: d.map(x=>x.roas), marker:{color:VIOLET}, yaxis:"y" },
+function prixChart(data) {
+  Plotly.react("chart-prix", [
+    { type:"bar", name:"ROAS", x: data.map(x=>x.label), y: data.map(x=>x.roas), marker:{color:VIOLET}, yaxis:"y" },
   ], {
     margin: {l:60,r:20,t:10,b:50},
     yaxis: { title: "ROAS" },
     barmode: "group",
   }, {responsive:true, displaylogo:false});
-  document.getElementById("reco-prix").innerHTML = DATA.reco.prix;
-})();
+}
+
+function update() {
+  const dateRows = rowsInDateRange();
+  const rows = filteredRows();
+
+  const start = dateStartEl.value, end = dateEndEl.value;
+  document.getElementById("period-label").textContent =
+    `Période sélectionnée : ${start} \u2192 ${end} | Persona : ${currentPersona} | (fenêtre glissante disponible : ${DATA.daily.date_min} \u2192 ${DATA.daily.date_max})`;
+
+  renderKPIs(rows);
+  renderPersonaChart(dateRows);
+  bubbleChart("chart-format", aggregateJS(rows, "format"));
+  barChart("chart-gamme", aggregateJS(rows, "gamme"), "roas", false, "spend");
+  barChart("chart-collection", aggregateJS(rows, "collection").slice(0, 12), "cpa", true, "spend");
+  barChart("chart-coloris", aggregateJS(rows, "coloris").slice(0, 12), "roas", false, "metric");
+  bubbleChart("chart-concept", aggregateJS(rows, "concept").slice(0, 12));
+  prixChart(aggregateJS(rows, "prix"));
+}
+
+update();
 </script>
 </body>
 </html>
