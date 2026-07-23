@@ -31,6 +31,8 @@ from collections import defaultdict
 ROOT = Path(__file__).parent
 CSV_PATH = ROOT / "data_raw.csv"
 DAILY_CSV_PATH = ROOT / "data_daily.csv"
+MARKET_CSV_PATH = ROOT / "data_market_raw.csv"
+MARKET_DAILY_CSV_PATH = ROOT / "data_market_daily.csv"
 OUT_PATH = ROOT / "dashboard.html"
 
 # ---------------------------------------------------------------------------
@@ -150,6 +152,35 @@ PRIX_RULES = [
     ("sans prix", "Sans prix"),
 ]
 
+# Market is parsed from the CAMPAIGN name (not the ad name): client's campaign
+# nomenclature embeds a 2-letter country code in parentheses, e.g.
+# "ASUC-(HISTO)-US-(US)-PERF-ACQ-COLD" or "ASUC-(NEW)-SUISSE-(CH)-PERF-RTG".
+# Campaigns without such a code (INTER, ROW, multi-market catalog, branding/
+# organic posts) don't map to a single market and are excluded from this
+# chart only (same "non-conforming" policy as the other nomenclature fields).
+MARKET_NAMES = {
+    "FR": "France", "US": "USA", "UK": "UK", "DE": "Allemagne", "CH": "Suisse",
+    "IT": "Italie", "BE": "Belgique", "ES": "Espagne", "AT": "Autriche",
+    "CA": "Canada", "NL": "Pays-Bas", "AU": "Australie", "PT": "Portugal",
+    "MX": "Mexique", "PL": "Pologne", "NO": "Norvège", "SE": "Suède",
+    "HR": "Croatie", "MO": "Moyen-Orient",
+}
+
+
+def parse_market(campaign_name):
+    m = re.search(r"\(([A-Z]{2})\)", campaign_name)
+    if not m:
+        return None
+    code = m.group(1)
+    return MARKET_NAMES.get(code, code)
+
+
+def safe_float(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return 0.0
+
 
 def split_tokens(name):
     return [t.strip() for t in re.split(r"\s-\s", name) if t.strip()]
@@ -256,6 +287,65 @@ def load_daily_rows():
                 **parsed,
             })
     return rows
+
+
+def load_market_rows():
+    """Campaign-level totals since Jan 1st (data_market_raw.csv) - stable market reco/ideation."""
+    rows = []
+    with open(MARKET_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append({
+                "campaign_name": r["campaign_name"],
+                "cost": safe_float(r["cost"]),
+                "purchases": safe_float(r["purchases"]),
+                "conv_value": safe_float(r["conv_value"]),
+                "market": parse_market(r["campaign_name"]),
+            })
+    return rows
+
+
+def load_market_daily_rows():
+    """Per-campaign, per-day rows (data_market_daily.csv) - interactive market chart."""
+    rows = []
+    with open(MARKET_DAILY_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append({
+                "date": r["date"],
+                "campaign_name": r["campaign_name"],
+                "cost": safe_float(r["cost"]),
+                "purchases": safe_float(r["purchases"]),
+                "conv_value": safe_float(r["conv_value"]),
+                "market": parse_market(r["campaign_name"]),
+            })
+    return rows
+
+
+def aggregate_market(rows):
+    buckets = defaultdict(lambda: {"spend": 0.0, "value": 0.0, "purchases": 0.0, "campaigns": set()})
+    for r in rows:
+        key = r["market"]
+        if not key:
+            continue
+        b = buckets[key]
+        b["spend"] += r["cost"]
+        b["value"] += r["conv_value"]
+        b["purchases"] += r["purchases"]
+        b["campaigns"].add(r["campaign_name"])
+    out = []
+    for key, b in buckets.items():
+        roas = (b["value"] / b["spend"]) if b["spend"] > 0 else 0
+        out.append({
+            "label": key,
+            "spend": round(b["spend"], 2),
+            "value": round(b["value"], 2),
+            "purchases": round(b["purchases"], 1),
+            "n_campaigns": len(b["campaigns"]),
+            "roas": round(roas, 2),
+        })
+    out.sort(key=lambda x: x["spend"], reverse=True)
+    return out
 
 
 def aggregate(rows, field):
@@ -384,6 +474,37 @@ def reco_bar(agg, avg_roas, variable_label, metric="roas"):
     return " ".join(lines)
 
 
+def reco_market(agg):
+    if not agg:
+        return "Pas assez de données nomenclaturées pour recommander."
+    total_spend = sum(b["spend"] for b in agg)
+    total_value = sum(b["value"] for b in agg)
+    avg_roas = total_value / total_spend if total_spend else 0
+    sorted_by_roas = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best = sorted_by_roas[0]
+    worst = sorted_by_roas[-1]
+    lines = [
+        f"<b>{best['label']}</b> est le marché le plus rentable (ROAS {best['roas']}x pour {fmt_eur(best['spend'])} "
+        f"de spend) : prioriser les prochains investissements média sur ce marché."
+    ]
+    if worst["label"] != best["label"] and worst["spend"] > 0.03 * total_spend:
+        lines.append(
+            f"<b>{worst['label']}</b> affiche le ROAS le plus faible ({worst['roas']}x) malgré {fmt_eur(worst['spend'])} "
+            f"de spend : challenger le ciblage/créa local ou réduire l'allocation avant de réinvestir."
+        )
+    big_spend_low_roas = [
+        b for b in agg
+        if b["spend"] > 0.1 * total_spend and b["roas"] < avg_roas and b["label"] not in (best["label"], worst["label"])
+    ]
+    if big_spend_low_roas:
+        names = ", ".join(f"<b>{b['label']}</b> ({b['roas']}x)" for b in big_spend_low_roas)
+        lines.append(
+            f"{names} concentre(nt) un budget important pour un ROAS sous la moyenne compte ({avg_roas:.2f}x) : "
+            f"à requestionner (ciblage, créa locale ou pression publicitaire)."
+        )
+    return " ".join(lines)
+
+
 def reco_prix(agg):
     if len(agg) < 2:
         return "Pas assez de données (Avec prix / Sans prix) pour comparer."
@@ -406,6 +527,18 @@ def reco_prix(agg):
 # ---------------------------------------------------------------------------
 # Ideation bullets (3 per chart, stable - same source data as the reco above)
 # ---------------------------------------------------------------------------
+
+def ideas_market(agg):
+    if not agg:
+        return []
+    ranked = sorted(agg, key=lambda x: x["roas"], reverse=True)
+    best, worst = ranked[0], ranked[-1]
+    return [
+        f"Augmenter le budget média sur <b>{best['label']}</b> pour capitaliser sur son ROAS.",
+        f"Auditer le ciblage et les créas locales sur <b>{worst['label']}</b> avant de réinvestir davantage.",
+        f"Tester une déclinaison des codes créatifs qui fonctionnent sur <b>{best['label']}</b> sur des marchés proches culturellement.",
+    ]
+
 
 def ideas_persona(agg):
     if not agg:
@@ -535,6 +668,20 @@ def build_daily_payload():
     }
 
 
+def build_market_daily_payload():
+    rows = load_market_daily_rows()
+    dates = sorted({r["date"] for r in rows})
+    compact_rows = [
+        [r["date"], r["market"], round(r["cost"], 2), round(r["purchases"], 1), round(r["conv_value"], 2)]
+        for r in rows if r["market"]
+    ]
+    return {
+        "rows": compact_rows,
+        "date_min": dates[0] if dates else None,
+        "date_max": dates[-1] if dates else None,
+    }
+
+
 def main():
     rows = load_rows()
     total_spend, total_value, avg_roas = global_stats(rows)
@@ -548,7 +695,11 @@ def main():
     concept_agg = aggregate(rows, "concept")
     prix_agg = aggregate(rows, "prix")
 
+    market_rows = load_market_rows()
+    market_agg = aggregate_market(market_rows)
+
     daily = build_daily_payload()
+    market_daily = build_market_daily_payload()
 
     payload = {
         "meta": {
@@ -569,6 +720,7 @@ def main():
             },
         },
         "reco": {
+            "market": reco_market(market_agg),
             "persona": reco_persona(persona_agg, avg_roas),
             "format": reco_bubble(format_agg, avg_roas, "Format"),
             "gamme": reco_bar(gamme_agg, avg_roas, "Gamme"),
@@ -578,6 +730,7 @@ def main():
             "prix": reco_prix(prix_agg),
         },
         "ideas": {
+            "market": ideas_market(market_agg),
             "persona": ideas_persona(persona_agg),
             "format": ideas_format(format_agg),
             "gamme": ideas_gamme(gamme_agg),
@@ -587,6 +740,7 @@ def main():
             "prix": ideas_prix(prix_agg),
         },
         "daily": daily,
+        "market_daily": market_daily,
     }
 
     html = HTML_TEMPLATE.replace("__DATA__", json.dumps(payload, ensure_ascii=False))
@@ -594,7 +748,8 @@ def main():
     print(
         f"Wrote {OUT_PATH} ({len(rows)} ads since Jan 1, spend={fmt_eur(total_spend)}, "
         f"ROAS moyen={avg_roas:.2f}x | daily window {daily['date_min']} -> {daily['date_max']}, "
-        f"{len(daily['rows'])} rows, {len(daily['ad_names'])} ads)"
+        f"{len(daily['rows'])} rows, {len(daily['ad_names'])} ads | "
+        f"market: {len(market_agg)} markets, {len(market_daily['rows'])} daily rows)"
     )
 
 
@@ -661,6 +816,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="kpis" id="kpis"></div>
 <main>
+
+  <section class="card">
+    <h2>Vue Marché</h2>
+    <div class="sub">Spend x ROAS par marché (FR, US, UK...), extrait de la nomenclature de campagne - triée par spend.</div>
+    <div id="chart-market" class="chart"></div>
+    <div class="reco" id="reco-market"></div>
+    <div class="ideas" id="ideas-market"></div>
+    <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
+  </section>
 
   <section class="card">
     <h2>Persona x Spend x Volume de créas x ROAS</h2>
@@ -740,10 +904,14 @@ const F = { date:0, ad_idx:1, cost:2, purchases:3, conv_value:4, persona:5, form
 const RAW = DATA.daily.rows;
 const AD_NAMES = DATA.daily.ad_names;
 
+// Market rows: [date, market_label, cost, purchases, conv_value]
+const FM = { date:0, market:1, cost:2, purchases:3, conv_value:4 };
+const MARKET_RAW = DATA.market_daily.rows;
+
 function euros(x) { return x.toLocaleString('fr-FR', {maximumFractionDigits:0}) + " €"; }
 
 // ---- Recos + ideas (static, from full-period data) ----
-["persona","format","gamme","collection","coloris","concept","prix"].forEach(key => {
+["market","persona","format","gamme","collection","coloris","concept","prix"].forEach(key => {
   document.getElementById("reco-" + key).innerHTML = DATA.reco[key];
   const ideas = DATA.ideas[key] || [];
   const box = document.getElementById("ideas-" + key);
@@ -827,6 +995,44 @@ const pillsBox = document.getElementById("persona-pills");
 function rowsInDateRange() {
   const start = dateStartEl.value, end = dateEndEl.value;
   return RAW.filter(r => r[F.date] >= start && r[F.date] <= end);
+}
+function marketRowsInDateRange() {
+  const start = dateStartEl.value, end = dateEndEl.value;
+  return MARKET_RAW.filter(r => r[FM.date] >= start && r[FM.date] <= end);
+}
+// Market aggregation: Spend + ROAS only (no persona/volume dimension), grouped
+// by market label. Kept separate from aggregateJS() since market rows don't
+// carry an ad_idx to count distinct creatives.
+function aggregateMarketJS(rows) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const key = r[FM.market];
+    if (!key) continue;
+    if (!buckets.has(key)) buckets.set(key, { spend: 0, value: 0, purchases: 0 });
+    const b = buckets.get(key);
+    b.spend += r[FM.cost];
+    b.value += r[FM.conv_value];
+    b.purchases += r[FM.purchases];
+  }
+  const out = [];
+  for (const [label, b] of buckets) {
+    const roas = b.spend > 0 ? b.value / b.spend : 0;
+    out.push({ label, spend: b.spend, value: b.value, purchases: b.purchases, roas });
+  }
+  out.sort((a, b) => b.spend - a.spend); // always spend-descending, like Gamme/Collection
+  return out;
+}
+function marketBarChart(data) {
+  Plotly.react("chart-market", [{
+    type: "bar",
+    orientation: "h",
+    x: data.map(d => d.roas).reverse(),
+    y: data.map(d => d.label + `  (${euros(d.spend)})`).reverse(),
+    marker: { color: VIOLET },
+  }], {
+    margin: {l:160,r:20,t:10,b:50},
+    xaxis: { title: "ROAS" },
+  }, {responsive:true, displaylogo:false});
 }
 function filteredRows() {
   const rows = rowsInDateRange();
@@ -1032,6 +1238,7 @@ function update() {
     `Période sélectionnée : ${start} \u2192 ${end} | Persona : ${currentPersona} | (fenêtre glissante disponible : ${DATA.daily.date_min} \u2192 ${DATA.daily.date_max})`;
 
   renderKPIs(rows);
+  marketBarChart(aggregateMarketJS(marketRowsInDateRange()));
   renderPersonaChart(dateRows);
   bubbleChart("chart-format", aggregateJS(rows, "format"));
   barChart("chart-gamme", aggregateJS(rows, "gamme"), "roas", false, "spend");
