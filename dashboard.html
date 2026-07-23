@@ -259,14 +259,16 @@ function renderKPIs(rows) {
 // vs ~0-5x ROAS), so all three axes are normalized to 0-1 (relabeled with real
 // values via tickvals/ticktext) to keep the terrain geometry sane and comparable.
 //
-// Each persona is a smooth Gaussian "bump" (peak height = normalized ROAS) on a
-// shared grid, combined via max() so overlapping bumps don't add up unrealistically
-// and each mountain's true peak height still reflects its own ROAS exactly.
-// Elevation is colored on a red -> orange -> yellow -> green scale (low ROAS/valley
-// = red, high ROAS/peak = green), so the mountains visually vary with ROAS, not an
-// arbitrary per-persona color. When a single persona is selected via the pills,
-// non-selected mountains are recolored to flat grey via a separate `surfacecolor`
-// array (decoupled from the `z` elevation, which still shows every persona's shape).
+// Each persona is a smooth Gaussian "bump" on a shared grid, combined via max()
+// so overlapping bumps don't add up unrealistically. Peak HEIGHT = normalized
+// ROAS (exact per persona). Bump WIDTH/footprint (sigma) scales with n_ads
+// (volume of creatives), so a persona with more creatives renders as a visibly
+// bigger/wider mountain, independent of its ROAS-driven height.
+// Elevation is colored on a green -> yellow -> orange -> red scale, low (valley,
+// low ROAS) to high (peak, high ROAS) - per explicit user-specified order. When
+// a single persona is selected via the pills, non-selected mountains are
+// recolored to flat grey via a separate `surfacecolor` array (decoupled from
+// the `z` elevation, which still shows every persona's shape).
 function renderPersonaChart(dateFilteredRows) {
   const agg = aggregateJS(dateFilteredRows, "persona");
   if (!agg.length) { Plotly.react("chart-persona", [], {}); return; }
@@ -274,17 +276,23 @@ function renderPersonaChart(dateFilteredRows) {
   const nMax = Math.max(...agg.map(p => p.n_ads), 1);
   const roasMax = Math.max(...agg.map(p => p.roas), 1);
 
+  // sigma (bump width/footprint) scales with n_ads so mountains with more
+  // creatives are visibly bigger/wider, not just taller by ROAS. Kept narrower
+  // than the raw spend/volume spacing between personas so mountains stay
+  // visually separated (with clear "valleys" between them) instead of merging
+  // into a single blob when two personas sit close together on the grid.
+  const SIGMA_MIN = 0.05, SIGMA_MAX = 0.13;
   const points = agg.map(p => ({
     label: p.label,
     x: p.spend / spendMax,
     y: p.n_ads / nMax,
     z: Math.max(p.roas / roasMax, 0.04),
+    sigma: SIGMA_MIN + (p.n_ads / nMax) * (SIGMA_MAX - SIGMA_MIN),
     spend: p.spend, n_ads: p.n_ads, roas: p.roas,
   }));
 
   const GRID_N = 55;
   const AXIS_MAX = 1.15;
-  const sigma = 0.16;
   const coords = Array.from({ length: GRID_N }, (_, i) => (i / (GRID_N - 1)) * AXIS_MAX);
 
   const zGrid = [];
@@ -296,7 +304,7 @@ function renderPersonaChart(dateFilteredRows) {
       let peakZ = 0;
       let peakActive = true;
       for (const pt of points) {
-        const d2 = ((xx - pt.x) ** 2 + (yy - pt.y) ** 2) / (2 * sigma * sigma);
+        const d2 = ((xx - pt.x) ** 2 + (yy - pt.y) ** 2) / (2 * pt.sigma * pt.sigma);
         const h = pt.z * Math.exp(-d2);
         if (h > peakZ) {
           peakZ = h;
@@ -311,11 +319,12 @@ function renderPersonaChart(dateFilteredRows) {
   }
 
   // Colorscale over surfacecolor range [-1, 1]: values <0 (inactive persona) render
-  // flat grey; values [0,1] (elevation of active/visible mountains) render the
-  // red (valley/low ROAS) -> orange -> yellow -> green (peak/high ROAS) gradient.
+  // flat grey; values [0,1] (elevation, low -> high) render the
+  // green (base/low ROAS) -> yellow -> orange -> red (peak/high ROAS) gradient,
+  // per explicit user order ("vert, jaune, orange, rouge" from valley to peak).
   const colorscale = [
     [0, GREY_OUT], [0.4999, GREY_OUT],
-    [0.5, "#FF4444"], [0.67, "#FFA733"], [0.84, "#FFD54D"], [1, "#4CAF50"],
+    [0.5, "#4CAF50"], [0.67, "#FFD54D"], [0.84, "#FFA733"], [1, "#FF4444"],
   ];
 
   const surfaceTrace = {
