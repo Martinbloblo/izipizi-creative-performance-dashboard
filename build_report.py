@@ -34,6 +34,8 @@ DAILY_CSV_PATH = ROOT / "data_daily.csv"
 MARKET_CSV_PATH = ROOT / "data_market_raw.csv"
 MARKET_DAILY_CSV_PATH = ROOT / "data_market_daily.csv"
 CAMPAIGN_EXT_CSV_PATH = ROOT / "data_market_daily_ext.csv"
+FUNNEL_EXT_CSV_PATH = ROOT / "data_funnel_ext.csv"
+AD_CAMPAIGN_LINK_CSV_PATH = ROOT / "data_ad_campaign_link.csv"
 OUT_PATH = ROOT / "dashboard.html"
 
 # ---------------------------------------------------------------------------
@@ -343,15 +345,33 @@ def load_market_daily_rows():
     return rows
 
 
+def load_funnel_ext_rows():
+    """LP Views + Initiate Checkout per (date, campaign_name), from
+    data_funnel_ext.csv - merged into load_campaign_daily_ext_rows() below to
+    feed the Vue Funnel complet section."""
+    lookup = {}
+    with open(FUNNEL_EXT_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            lookup[(r["date"], r["campaign_name"])] = {
+                "landing_page_views": safe_float(r["landing_page_views"]),
+                "initiate_checkout": safe_float(r["initiate_checkout"]),
+            }
+    return lookup
+
+
 def load_campaign_daily_ext_rows():
     """Per-campaign, per-day rows with extended metrics (data_market_daily_ext.csv):
     impressions, clicks, CPM, Frequency, add-to-cart, on top of cost/purchases/
     conv_value - used by sections 1 (Resume compte), 3 (CPMR), 4 (Whitelisting)
-    and 6 (Comparaison campagne)."""
+    and 6 (Comparaison campagne). Also merges in LP Views + Initiate Checkout
+    (data_funnel_ext.csv) for Vue Funnel complet."""
+    funnel_lookup = load_funnel_ext_rows()
     rows = []
     with open(CAMPAIGN_EXT_CSV_PATH, encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for r in reader:
+            funnel = funnel_lookup.get((r["date"], r["campaign_name"]), {})
             rows.append({
                 "date": r["date"],
                 "campaign_name": r["campaign_name"],
@@ -363,7 +383,10 @@ def load_campaign_daily_ext_rows():
                 "add_to_cart": safe_float(r["add_to_cart"]),
                 "frequency": safe_float(r["frequency"]),
                 "market_loose": parse_market_loose(r["campaign_name"]),
+                "market_full": parse_market(r["campaign_name"]),
                 "whitelisting": is_whitelisting(r["campaign_name"]),
+                "landing_page_views": funnel.get("landing_page_views", 0.0),
+                "initiate_checkout": funnel.get("initiate_checkout", 0.0),
             })
     return rows
 
@@ -373,6 +396,7 @@ def build_campaign_daily_payload():
     campaign_names = sorted({r["campaign_name"] for r in rows})
     campaign_index = {name: i for i, name in enumerate(campaign_names)}
     dates = sorted({r["date"] for r in rows})
+    markets_full = sorted({r["market_full"] for r in rows if r["market_full"]})
     compact_rows = [
         [
             r["date"], campaign_index[r["campaign_name"]], round(r["cost"], 2),
@@ -380,6 +404,8 @@ def build_campaign_daily_payload():
             round(r["impressions"], 0), round(r["clicks"], 0),
             round(r["add_to_cart"], 1), round(r["frequency"], 4),
             r["market_loose"], 1 if r["whitelisting"] else 0,
+            r["market_full"] or "",
+            round(r["landing_page_views"], 0), round(r["initiate_checkout"], 0),
         ]
         for r in rows
     ]
@@ -388,6 +414,7 @@ def build_campaign_daily_payload():
         "rows": compact_rows,
         "date_min": dates[0] if dates else None,
         "date_max": dates[-1] if dates else None,
+        "markets_full": markets_full,
     }
 
 
@@ -937,7 +964,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<div class="kpis" id="kpis"></div>
 <main>
 
   <section class="card">
@@ -951,9 +977,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="card">
     <div class="section-eyebrow">2 &middot; Vue d'ensemble</div>
     <h2>Synthèse créative</h2>
-    <div class="sub">Mix de formats (spend) et volume de créas par format, sur la période et le persona sélectionnés. Top 3 par catégorie.</div>
+    <div class="sub">Mix de formats (spend), sur la période et le persona sélectionnés. Top 3 par catégorie.</div>
     <div id="chart-format-mix" class="chart" style="height:150px"></div>
-    <div id="chart-format-volume" class="chart" style="height:320px"></div>
     <div class="badges-grid" id="top5-badges"></div>
     <div class="reco-caption">"Top produits" = Gamme (SUN, KIDS, READING...). "Top angles" = Collection/Ligne créative, faute de segment "angle" dédié dans la nomenclature.</div>
   </section>
@@ -965,6 +990,58 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="reco" id="reco-market"></div>
     <div class="ideas" id="ideas-market"></div>
     <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">4 &middot; Analyse temporelle</div>
+    <h2>CPMR (CPM x Fréquence) &amp; CPA dans le temps</h2>
+    <div class="sub">Sélectionnez un pays (détection large dans le nom de campagne) et/ou une campagne précise pour affiner l'analyse. Barres CPMR (axe principal), courbe CPA en superposition (axe secondaire).</div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <div class="granularity-toggle" style="margin-bottom:0;">
+        <button class="preset-btn active" data-gran="day">Jour</button>
+        <button class="preset-btn" data-gran="week">Semaine</button>
+      </div>
+      <div class="granularity-toggle" id="cpmr-country-toggle" style="margin-bottom:0;">
+        <button class="preset-btn active" data-country="ALL">Tous pays</button>
+        <button class="preset-btn" data-country="FR">FR</button>
+        <button class="preset-btn" data-country="US">US</button>
+        <button class="preset-btn" data-country="UK">UK</button>
+      </div>
+      <select id="cpmr-campaign-select" class="cmp-select"></select>
+    </div>
+    <div id="chart-cpmr" class="chart"></div>
+    <div class="reco-caption" id="cpmr-mode-caption"></div>
+    <div class="reco-caption">CPM et CPA recalculés à partir de Cost/Impressions/Achats (agrégation exacte). Fréquence agrégée en moyenne pondérée par les impressions (approximation usuelle en l'absence de la métrique Reach).</div>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">5 &middot; Analyse temporelle</div>
+    <h2>Vue Tunnel</h2>
+    <div class="sub">Vue globale (toutes campagnes), agrégée par mois par défaut - basculez sur semaine ou jour. Filtre marché optionnel.</div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <div class="granularity-toggle" id="tunnel-granularity-toggle" style="margin-bottom:0;">
+        <button class="preset-btn active" data-gran="month">Mois</button>
+        <button class="preset-btn" data-gran="week">Semaine</button>
+        <button class="preset-btn" data-gran="day">Jour</button>
+      </div>
+      <select id="tunnel-market-select" class="cmp-select"></select>
+    </div>
+    <div class="table-scroll"><table class="cmp-table" id="tunnel-table"></table></div>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">6 &middot; Analyse temporelle</div>
+    <h2>Vue Funnel complet</h2>
+    <div class="sub">Vue globale (toutes campagnes), agrégée par mois par défaut - basculez sur semaine ou jour. Filtre marché optionnel.</div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <div class="granularity-toggle" id="funnel-granularity-toggle" style="margin-bottom:0;">
+        <button class="preset-btn active" data-gran="month">Mois</button>
+        <button class="preset-btn" data-gran="week">Semaine</button>
+        <button class="preset-btn" data-gran="day">Jour</button>
+      </div>
+      <select id="funnel-market-select" class="cmp-select"></select>
+    </div>
+    <div id="funnel-box"></div>
   </section>
 
   <section class="card">
@@ -1031,43 +1108,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </section>
 
   <section class="card">
-    <div class="section-eyebrow">3 &middot; Analyse temporelle</div>
-    <h2>CPMR (CPM x Fréquence) &amp; CPA dans le temps</h2>
-    <div class="sub">Sélectionnez un pays (détection large dans le nom de campagne) et/ou une campagne précise pour affiner l'analyse. Barres CPMR (axe principal), courbe CPA en superposition (axe secondaire).</div>
-    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
-      <div class="granularity-toggle" style="margin-bottom:0;">
-        <button class="preset-btn active" data-gran="day">Jour</button>
-        <button class="preset-btn" data-gran="week">Semaine</button>
-      </div>
-      <div class="granularity-toggle" id="cpmr-country-toggle" style="margin-bottom:0;">
-        <button class="preset-btn active" data-country="ALL">Tous pays</button>
-        <button class="preset-btn" data-country="FR">FR</button>
-        <button class="preset-btn" data-country="US">US</button>
-        <button class="preset-btn" data-country="UK">UK</button>
-      </div>
-      <select id="cpmr-campaign-select" class="cmp-select"></select>
-    </div>
-    <div id="chart-cpmr" class="chart"></div>
-    <div class="reco-caption" id="cpmr-mode-caption"></div>
-    <div class="reco-caption">CPM et CPA recalculés à partir de Cost/Impressions/Achats (agrégation exacte). Fréquence agrégée en moyenne pondérée par les impressions (approximation usuelle en l'absence de la métrique Reach).</div>
-  </section>
-
-  <section class="card">
-    <div class="section-eyebrow">4 &middot; Analyse temporelle</div>
+    <div class="section-eyebrow">7 &middot; Analyse temporelle</div>
     <h2>Whitelisting vs total</h2>
     <div class="sub">% du spend des campagnes "whitelisting" (détection insensible à la casse dans le nom de campagne) vs spend total, sur la période sélectionnée.</div>
     <div id="whitelisting-box"></div>
   </section>
 
   <section class="card">
-    <div class="section-eyebrow">5 &middot; Analyse temporelle</div>
+    <div class="section-eyebrow">8 &middot; Analyse temporelle</div>
     <h2>Spend par landing page</h2>
     <div class="sub">Agrégation du spend par landing page (destination URL), sur la période sélectionnée.</div>
     <div id="landing-page-box"></div>
   </section>
 
   <section class="card">
-    <div class="section-eyebrow">6 &middot; Analyse temporelle</div>
+    <div class="section-eyebrow">9 &middot; Analyse temporelle</div>
     <h2>Comparaison campagne (période personnalisée)</h2>
     <div class="sub">2 périodes libres et indépendantes - Impressions, Clics, CTR, Add to cart, Taux d'ATC, Achats, Valeur de conversion, ROAS par campagne.</div>
     <div class="period-picker">
@@ -1077,8 +1132,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <input type="date" id="cmp-b-start"><span>&rarr;</span><input type="date" id="cmp-b-end">
     </div>
     <div style="margin:14px 0 4px;">
-      <label style="font-size:13px; color:#888; margin-right:8px;">Filtrer par campagne</label>
-      <select id="cmp-campaign-filter" class="cmp-select"></select>
+      <label style="font-size:13px; color:#888; margin-right:8px;">Filtrer par marché</label>
+      <select id="cmp-market-filter" class="cmp-select"></select>
     </div>
     <div class="table-scroll"><table class="cmp-table" id="cmp-table"></table></div>
   </section>
@@ -1103,10 +1158,17 @@ const FM = { date:0, market:1, cost:2, purchases:3, conv_value:4 };
 const MARKET_RAW = DATA.market_daily.rows;
 
 // Campaign-level rows (extended metrics): [date, campaign_idx, cost, purchases,
-// conv_value, impressions, clicks, add_to_cart, frequency, market_loose, whitelisting]
-const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10 };
+// conv_value, impressions, clicks, add_to_cart, frequency, market_loose, whitelisting, market_full]
+const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10, market_full:11 };
 const CAMPAIGN_RAW = DATA.campaign_daily.rows;
 const CAMPAIGN_NAMES = DATA.campaign_daily.campaign_names;
+const MARKETS_FULL = DATA.campaign_daily.markets_full;
+// campaign_idx -> market_full lookup, built once from the raw rows (market is
+// constant per campaign, so the first row seen for each campaign_idx suffices).
+const CAMPAIGN_MARKET = new Map();
+for (const r of CAMPAIGN_RAW) {
+  if (!CAMPAIGN_MARKET.has(r[FC.campaign_idx])) CAMPAIGN_MARKET.set(r[FC.campaign_idx], r[FC.market_full]);
+}
 
 function euros(x) { return x.toLocaleString('fr-FR', {maximumFractionDigits:0}) + " €"; }
 function intFr(x) { return Math.round(x).toLocaleString('fr-FR'); }
@@ -1239,26 +1301,6 @@ function filteredRows() {
   const rows = rowsInDateRange();
   if (currentPersona === "Tous") return rows;
   return rows.filter(r => r[F.persona] === currentPersona);
-}
-
-function renderKPIs(rows) {
-  const spend = rows.reduce((s, r) => s + r[F.cost], 0);
-  const value = rows.reduce((s, r) => s + r[F.conv_value], 0);
-  const purchases = rows.reduce((s, r) => s + r[F.purchases], 0);
-  const roas = spend > 0 ? value / spend : 0;
-  const kpis = document.getElementById("kpis");
-  kpis.innerHTML = "";
-  [
-    ["Spend (période sélectionnée)", euros(spend)],
-    ["Valeur de conversion", euros(value)],
-    ["ROAS moyen", roas.toFixed(2) + "x"],
-    ["Achats", Math.round(purchases).toLocaleString('fr-FR')],
-  ].forEach(([label, val]) => {
-    const el = document.createElement("div");
-    el.className = "kpi";
-    el.innerHTML = `<div class="label">${label}</div><div class="value">${val}</div>`;
-    kpis.appendChild(el);
-  });
 }
 
 // ---- Persona "mountain" chart (smooth surface, swapped axes: Y=volume, Z=ROAS) ----
@@ -1541,19 +1583,6 @@ function renderFormatMix(rows) {
   }, { responsive: true, displaylogo: false });
 }
 
-function renderFormatVolume(rows) {
-  const agg = aggregateJS(rows, "format");
-  Plotly.react("chart-format-volume", [{
-    type: "bar", orientation: "h",
-    x: agg.map(d => d.n_ads).reverse(),
-    y: agg.map(d => d.label).reverse(),
-    marker: { color: VIOLET },
-  }], {
-    margin: { l: 200, r: 20, t: 10, b: 50 },
-    xaxis: { title: "Nombre de créas" },
-  }, { responsive: true, displaylogo: false });
-}
-
 // "Top angles"/"Top produits" have no dedicated nomenclature segment - mapped
 // to the closest existing fields (collection / gamme respectively), disclosed
 // via the section's caption.
@@ -1735,6 +1764,121 @@ document.querySelectorAll("#cpmr-country-toggle .preset-btn").forEach(btn => {
 })();
 
 // ---------------------------------------------------------------------------
+// Section 5 - Vue Tunnel : agrégation globale (toutes campagnes) du tunnel
+// média-achat par mois/semaine/jour, avec filtre marché optionnel. Construite
+// entièrement à partir des métriques déjà embarquées (cost/impressions/
+// clicks/add_to_cart/purchases/conv_value) - toute la fenêtre de données
+// embarquée, indépendamment du filtre de date en haut de page.
+// ---------------------------------------------------------------------------
+const MONTH_NAMES_FR = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+let tunnelGranularity = "month";
+let tunnelMarket = null;
+
+function tunnelBucketKey(dateStr, granularity) {
+  if (granularity === "day") return dateStr;
+  if (granularity === "week") return cpmrBucketKey(dateStr, "week");
+  return dateStr.slice(0, 7);
+}
+
+function formatBucketLabel(key, granularity) {
+  if (granularity === "month") {
+    const [y, m] = key.split("-");
+    return `${MONTH_NAMES_FR[Number(m) - 1]} ${y}`;
+  }
+  const label = new Date(key + "T00:00:00Z").toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
+  return granularity === "week" ? `Semaine du ${label}` : label;
+}
+
+function fmtOrDash(fmt) {
+  return v => (v === null || v === undefined || !isFinite(v)) ? "—" : fmt(v);
+}
+const pctFr = v => v.toFixed(1) + " %";
+const roasFmt = v => v.toFixed(2) + "x";
+
+function tunnelBucketAgg(rows, granularity, market) {
+  const buckets = new Map();
+  for (const r of rows) {
+    if (market && r[FC.market_full] !== market) continue;
+    const bKey = tunnelBucketKey(r[FC.date], granularity);
+    if (!buckets.has(bKey)) buckets.set(bKey, { cost: 0, impressions: 0, clicks: 0, add_to_cart: 0, purchases: 0, conv_value: 0 });
+    const b = buckets.get(bKey);
+    b.cost += r[FC.cost]; b.impressions += r[FC.impressions]; b.clicks += r[FC.clicks];
+    b.add_to_cart += r[FC.add_to_cart]; b.purchases += r[FC.purchases]; b.conv_value += r[FC.conv_value];
+  }
+  return Array.from(buckets.keys()).sort().reverse().map(k => {
+    const b = buckets.get(k);
+    return {
+      key: k,
+      impressions: b.impressions,
+      cpm: b.impressions > 0 ? b.cost / b.impressions * 1000 : null,
+      clicks: b.clicks,
+      ctr: b.impressions > 0 ? b.clicks / b.impressions * 100 : null,
+      cpc: b.clicks > 0 ? b.cost / b.clicks : null,
+      cost: b.cost,
+      add_to_cart: b.add_to_cart,
+      cost_per_atc: b.add_to_cart > 0 ? b.cost / b.add_to_cart : null,
+      purchases: b.purchases,
+      cpa: b.purchases > 0 ? b.cost / b.purchases : null,
+      cvr: b.clicks > 0 ? b.purchases / b.clicks * 100 : null,
+      conv_value: b.conv_value,
+      aov: b.purchases > 0 ? b.conv_value / b.purchases : null,
+      roas: b.cost > 0 ? b.conv_value / b.cost : null,
+    };
+  });
+}
+
+const TUNNEL_COLS = [
+  ["Impressions", "impressions", fmtOrDash(intFr)],
+  ["CPM", "cpm", fmtOrDash(euros)],
+  ["Clics", "clicks", fmtOrDash(intFr)],
+  ["CTR", "ctr", fmtOrDash(pctFr)],
+  ["CPC", "cpc", fmtOrDash(euros)],
+  ["Budget", "cost", fmtOrDash(euros)],
+  ["ATC", "add_to_cart", fmtOrDash(intFr)],
+  ["Coût par ATC", "cost_per_atc", fmtOrDash(euros)],
+  ["Achats", "purchases", fmtOrDash(intFr)],
+  ["CPA", "cpa", fmtOrDash(euros)],
+  ["CVR", "cvr", fmtOrDash(pctFr)],
+  ["CA TTC", "conv_value", fmtOrDash(euros)],
+  ["AOV", "aov", fmtOrDash(euros)],
+  ["ROAS", "roas", fmtOrDash(roasFmt)],
+];
+
+function renderTunnelTable() {
+  const table = document.getElementById("tunnel-table");
+  const buckets = tunnelBucketAgg(CAMPAIGN_RAW, tunnelGranularity, tunnelMarket);
+  if (!buckets.length) { table.innerHTML = `<tbody><tr><td class="empty-state">Aucune donnée sur la période embarquée.</td></tr></tbody>`; return; }
+  const periodLabel = tunnelGranularity === "month" ? "Mois" : tunnelGranularity === "week" ? "Semaine" : "Jour";
+  const thead = `<thead><tr><th>${periodLabel}</th>` + TUNNEL_COLS.map(([label]) => `<th>${label}</th>`).join("") + "</tr></thead>";
+  const tbody = "<tbody>" + buckets.map(row => {
+    const cells = TUNNEL_COLS.map(([, key, fmt]) => `<td>${fmt(row[key])}</td>`).join("");
+    return `<tr><td>${formatBucketLabel(row.key, tunnelGranularity)}</td>${cells}</tr>`;
+  }).join("") + "</tbody>";
+  table.innerHTML = thead + tbody;
+}
+
+document.querySelectorAll("#tunnel-granularity-toggle .preset-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#tunnel-granularity-toggle .preset-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    tunnelGranularity = btn.dataset.gran;
+    renderTunnelTable();
+  });
+});
+
+(function initTunnelMarketSelect() {
+  const sel = document.getElementById("tunnel-market-select");
+  sel.innerHTML = '<option value="">Tous les marchés</option>' +
+    MARKETS_FULL.map(m => `<option value="${m}">${m}</option>`).join("");
+  sel.addEventListener("change", () => {
+    tunnelMarket = sel.value === "" ? null : sel.value;
+    renderTunnelTable();
+  });
+})();
+
+renderTunnelTable();
+
+// ---------------------------------------------------------------------------
 // Section 4 - Whitelisting vs total spend, on the shared date filter. Always
 // rendered (0%/empty state included) per explicit user requirement.
 // ---------------------------------------------------------------------------
@@ -1813,7 +1957,7 @@ const CMP_COLS = [
 ];
 const CMP_ZERO = { impressions: 0, clicks: 0, ctr: 0, add_to_cart: 0, taux_atc: 0, purchases: 0, conv_value: 0, roas: 0, cost: 0 };
 
-let cmpCampaignFilter = null;
+let cmpMarketFilter = null;
 
 function renderComparisonTable() {
   const aStart = document.getElementById("cmp-a-start").value, aEnd = document.getElementById("cmp-a-end").value;
@@ -1824,7 +1968,7 @@ function renderComparisonTable() {
   const metricsA = computeCampaignMetrics(campaignRowsInRange(aStart, aEnd));
   const metricsB = computeCampaignMetrics(campaignRowsInRange(bStart, bEnd));
   let idxList = Array.from(new Set([...metricsA.keys(), ...metricsB.keys()]));
-  if (cmpCampaignFilter !== null) idxList = idxList.filter(idx => idx === cmpCampaignFilter);
+  if (cmpMarketFilter !== null) idxList = idxList.filter(idx => CAMPAIGN_MARKET.get(idx) === cmpMarketFilter);
 
   const rows = idxList.map(idx => {
     const a = metricsA.get(idx) || CMP_ZERO, b = metricsB.get(idx) || CMP_ZERO;
@@ -1869,12 +2013,12 @@ const cmpBStart = document.getElementById("cmp-b-start"), cmpBEnd = document.get
 })();
 [cmpAStart, cmpAEnd, cmpBStart, cmpBEnd].forEach(el => el.addEventListener("change", renderComparisonTable));
 
-(function initCmpCampaignSelect() {
-  const sel = document.getElementById("cmp-campaign-filter");
-  sel.innerHTML = '<option value="">Toutes les campagnes</option>' +
-    CAMPAIGN_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join("");
+(function initCmpMarketSelect() {
+  const sel = document.getElementById("cmp-market-filter");
+  sel.innerHTML = '<option value="">Tous les marchés</option>' +
+    MARKETS_FULL.map(m => `<option value="${m}">${m}</option>`).join("");
   sel.addEventListener("change", () => {
-    cmpCampaignFilter = sel.value === "" ? null : Number(sel.value);
+    cmpMarketFilter = sel.value === "" ? null : sel.value;
     renderComparisonTable();
   });
 })();
@@ -1887,10 +2031,8 @@ function update() {
   document.getElementById("period-label").textContent =
     `Période sélectionnée : ${start} \u2192 ${end} | Persona : ${currentPersona} | (fenêtre glissante disponible : ${DATA.daily.date_min} \u2192 ${DATA.daily.date_max})`;
 
-  renderKPIs(rows);
   renderKpisCompare();
   renderFormatMix(rows);
-  renderFormatVolume(rows);
   renderTop5Badges(rows);
   marketBarChart(aggregateMarketJS(marketRowsInDateRange()));
   renderPersonaChart(dateRows);
