@@ -35,6 +35,7 @@ MARKET_CSV_PATH = ROOT / "data_market_raw.csv"
 MARKET_DAILY_CSV_PATH = ROOT / "data_market_daily.csv"
 CAMPAIGN_EXT_CSV_PATH = ROOT / "data_market_daily_ext.csv"
 FUNNEL_EXT_CSV_PATH = ROOT / "data_funnel_ext.csv"
+NEW_CUSTOMER_CSV_PATH = ROOT / "data_new_customer_daily.csv"
 AD_CAMPAIGN_LINK_CSV_PATH = ROOT / "data_ad_campaign_link.csv"
 OUT_PATH = ROOT / "dashboard.html"
 
@@ -360,13 +361,30 @@ def load_funnel_ext_rows():
     return lookup
 
 
+def load_new_customer_rows():
+    """New-customer purchases per (date, campaign_name), from
+    data_new_customer_daily.csv - Meta's native 'prospecting' Advantage+
+    Shopping audience-type breakdown (never-purchased-before users), used as
+    the "Nouveaux clients" proxy. Merged into load_campaign_daily_ext_rows()
+    below. Rows/campaigns absent from this file (e.g. non-ASUC organic posts,
+    which aren't Advantage+ Shopping campaigns) default to 0 via .get()."""
+    lookup = {}
+    with open(NEW_CUSTOMER_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            lookup[(r["date"], r["campaign_name"])] = safe_float(r["purchases_new"])
+    return lookup
+
+
 def load_campaign_daily_ext_rows():
     """Per-campaign, per-day rows with extended metrics (data_market_daily_ext.csv):
     impressions, clicks, CPM, Frequency, add-to-cart, on top of cost/purchases/
     conv_value - used by sections 1 (Resume compte), 3 (CPMR), 4 (Whitelisting)
     and 6 (Comparaison campagne). Also merges in LP Views + Initiate Checkout
-    (data_funnel_ext.csv) for Vue Funnel complet."""
+    (data_funnel_ext.csv) for Vue Funnel complet, and new-customer purchases
+    (data_new_customer_daily.csv) for the "Nouveaux clients" KPIs."""
     funnel_lookup = load_funnel_ext_rows()
+    new_customer_lookup = load_new_customer_rows()
     rows = []
     with open(CAMPAIGN_EXT_CSV_PATH, encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -387,6 +405,7 @@ def load_campaign_daily_ext_rows():
                 "whitelisting": is_whitelisting(r["campaign_name"]),
                 "landing_page_views": funnel.get("landing_page_views", 0.0),
                 "initiate_checkout": funnel.get("initiate_checkout", 0.0),
+                "purchases_new": new_customer_lookup.get((r["date"], r["campaign_name"]), 0.0),
             })
     return rows
 
@@ -460,6 +479,7 @@ def build_campaign_daily_payload():
             r["market_loose"], 1 if r["whitelisting"] else 0,
             r["market_full"] or "",
             round(r["landing_page_views"], 0), round(r["initiate_checkout"], 0),
+            round(r["purchases_new"], 1),
         ]
         for r in rows
     ]
@@ -992,6 +1012,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   table.cmp-table th:first-child, table.cmp-table td:first-child { text-align: left; white-space: normal; max-width: 240px; }
   table.cmp-table th { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; background: #FAFAFA; position: sticky; top: 0; }
   table.cmp-table th.cond-spend, table.cmp-table th.cond-cpa { color: #fff; background: var(--violet); }
+  table.tunnel-table-full { table-layout: fixed; font-size: 10.5px; }
+  table.tunnel-table-full th, table.tunnel-table-full td { padding: 6px 4px; white-space: normal; word-break: break-word; }
+  table.tunnel-table-full th:first-child, table.tunnel-table-full td:first-child { max-width: none; }
   table.cmp-table tbody tr:hover { background: #FAFAFA; }
   .cmp-table .up { color: #1E9E4E; }
   .cmp-table .down { color: var(--red); }
@@ -1035,9 +1058,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="card">
     <div class="section-eyebrow">1 &middot; Vue d'ensemble</div>
     <h2>Résumé compte</h2>
-    <div class="sub">Spend, Valeur de conversion, Clics, Achats, ROAS sur la période sélectionnée (filtre ci-dessus), comparés à la période N-1 (même durée, immédiatement précédente).</div>
+    <div class="sub">Spend, Valeur de conversion, Clics, Achats, ROAS, Nouveaux clients, Coût par nouveau client sur la période sélectionnée (filtre ci-dessus), comparés à la période N-1 (même durée, immédiatement précédente).</div>
     <div class="kpis-compare" id="kpis-compare"></div>
     <div class="reco-caption" id="resume-caption"></div>
+    <div class="reco-caption">"Nouveaux clients" = achats du segment d'audience Meta "prospecting" (utilisateurs n'ayant jamais acheté), disponible car toutes les campagnes IZIPIZI sont en Advantage+ Shopping. "Coût par nouveau client" = spend total de la campagne (tous segments confondus) / Nouveaux clients, convention Meta Ads Manager.</div>
   </section>
 
   <section class="card">
@@ -1061,8 +1085,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <section class="card">
     <h2>Vue Marché</h2>
-    <div class="sub">Spend x ROAS par marché (FR, US, UK...), extrait de la nomenclature de campagne - triée par spend.</div>
-    <div id="chart-market" class="chart"></div>
+    <div style="display:flex; gap:24px; flex-wrap:wrap;">
+      <div style="flex:1 1 420px; min-width:320px;">
+        <div class="sub">Spend x ROAS par marché (FR, US, UK...), extrait de la nomenclature de campagne - triée par spend.</div>
+        <div id="chart-market" class="chart"></div>
+      </div>
+      <div style="flex:1 1 420px; min-width:320px;">
+        <div class="sub">Spend x Coût par nouveau client par marché (segment Meta "prospecting", utilisateurs n'ayant jamais acheté).</div>
+        <div id="chart-market-new-customer" class="chart"></div>
+      </div>
+    </div>
     <div class="reco" id="reco-market"></div>
     <div class="ideas" id="ideas-market"></div>
     <div class="reco-caption">Recommandation et idées basées sur la période complète (01/01 &rarr; aujourd'hui) - ne varient pas avec les filtres ci-dessus.</div>
@@ -1102,7 +1134,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
       <select id="tunnel-market-select" class="cmp-select"></select>
     </div>
-    <div class="table-scroll"><table class="cmp-table" id="tunnel-table"></table></div>
+    <table class="cmp-table tunnel-table-full" id="tunnel-table"></table>
   </section>
 
   <section class="card">
@@ -1185,7 +1217,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="card">
     <div class="section-eyebrow">8 &middot; Analyse temporelle</div>
     <h2>Comparaison campagne (période personnalisée)</h2>
-    <div class="sub">2 périodes libres et indépendantes - Impressions, Clics, CTR, Add to cart, Taux d'ATC, Achats, Valeur de conversion, ROAS par campagne.</div>
+    <div class="sub">2 périodes libres et indépendantes - Impressions, Clics, CTR, Add to cart, Taux d'ATC, Achats, Valeur de conversion, ROAS, Nouveaux clients, Coût par nouveau client par campagne.</div>
     <div class="period-picker">
       <span class="tag a">Période A</span>
       <input type="date" id="cmp-a-start"><span>&rarr;</span><input type="date" id="cmp-a-end">
@@ -1221,7 +1253,7 @@ const MARKET_RAW = DATA.market_daily.rows;
 // Campaign-level rows (extended metrics): [date, campaign_idx, cost, purchases,
 // conv_value, impressions, clicks, add_to_cart, frequency, market_loose, whitelisting,
 // market_full, landing_page_views, initiate_checkout]
-const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10, market_full:11, landing_page_views:12, initiate_checkout:13 };
+const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10, market_full:11, landing_page_views:12, initiate_checkout:13, purchases_new:14 };
 const CAMPAIGN_RAW = DATA.campaign_daily.rows;
 const CAMPAIGN_NAMES = DATA.campaign_daily.campaign_names;
 const MARKETS_FULL = DATA.campaign_daily.markets_full;
@@ -1234,6 +1266,11 @@ for (const r of CAMPAIGN_RAW) {
 
 function euros(x) { return x.toLocaleString('fr-FR', {maximumFractionDigits:0}) + " €"; }
 function intFr(x) { return Math.round(x).toLocaleString('fr-FR'); }
+// Coût par nouveau client is undefined when there is no new-customer purchase
+// in the period - shown as "-" rather than a fabricated/misleading 0 € or
+// infinite value.
+function eurosOrDash(x) { return (x === null || x === undefined || !isFinite(x)) ? "\u2013" : euros(x); }
+function costPerNew(cost, purchasesNew) { return purchasesNew > 0 ? cost / purchasesNew : null; }
 
 // ---- Recos + ideas (static, from full-period data) ----
 ["market","persona","format","gamme","collection","coloris","concept","prix"].forEach(key => {
@@ -1357,6 +1394,48 @@ function marketBarChart(data) {
   }], {
     margin: {l:160,r:20,t:10,b:50},
     xaxis: { title: "ROAS" },
+  }, {responsive:true, displaylogo:false});
+}
+// Market aggregation: Spend + Coût par nouveau client, from CAMPAIGN_RAW
+// (which carries purchases_new, unlike MARKET_RAW). Grouped by market_full,
+// sorted by spend like the ROAS chart above. Markets with 0 new customers in
+// the period are excluded from the chart itself (cost_per_new is undefined)
+// but never silently drop the whole feature - see the caption rendered below.
+function aggregateMarketNewCustomerJS(rows) {
+  const buckets = new Map();
+  for (const r of rows) {
+    const key = r[FC.market_full];
+    if (!key) continue;
+    if (!buckets.has(key)) buckets.set(key, { spend: 0, purchases_new: 0 });
+    const b = buckets.get(key);
+    b.spend += r[FC.cost];
+    b.purchases_new += r[FC.purchases_new];
+  }
+  const out = [];
+  for (const [label, b] of buckets) {
+    out.push({ label, spend: b.spend, purchases_new: b.purchases_new, cost_per_new: costPerNew(b.spend, b.purchases_new) });
+  }
+  out.sort((a, b) => b.spend - a.spend);
+  return out;
+}
+function marketNewCustomerChart(data) {
+  const withVal = data.filter(d => d.cost_per_new !== null);
+  const box = document.getElementById("chart-market-new-customer");
+  if (!withVal.length) {
+    Plotly.purge(box);
+    box.innerHTML = '<div class="empty-state">Aucun nouveau client (segment "prospecting") sur la période sélectionnée.</div>';
+    return;
+  }
+  box.innerHTML = "";
+  Plotly.react(box, [{
+    type: "bar",
+    orientation: "h",
+    x: withVal.map(d => d.cost_per_new).reverse(),
+    y: withVal.map(d => d.label + `  (${euros(d.spend)}, ${intFr(d.purchases_new)} nouv. clients)`).reverse(),
+    marker: { color: VIOLET },
+  }], {
+    margin: {l:160,r:20,t:10,b:50},
+    xaxis: { title: "Coût par nouveau client (€)" },
   }, {responsive:true, displaylogo:false});
 }
 function filteredRows() {
@@ -1546,11 +1625,15 @@ function campaignRowsInRange(start, end) {
 }
 
 function accountAgg(rows) {
-  let spend = 0, clicks = 0, purchases = 0, value = 0;
+  let spend = 0, clicks = 0, purchases = 0, value = 0, purchasesNew = 0;
   for (const r of rows) {
     spend += r[FC.cost]; clicks += r[FC.clicks]; purchases += r[FC.purchases]; value += r[FC.conv_value];
+    purchasesNew += r[FC.purchases_new];
   }
-  return { spend, clicks, purchases, conv_value: value, roas: spend > 0 ? value / spend : 0 };
+  return {
+    spend, clicks, purchases, conv_value: value, roas: spend > 0 ? value / spend : 0,
+    purchases_new: purchasesNew, cost_per_new: costPerNew(spend, purchasesNew),
+  };
 }
 
 // N-1 = same duration, immediately preceding the selected period. Clamped to
@@ -1573,7 +1656,8 @@ function prevPeriodRange(start, end) {
 }
 
 function deltaBlock(curVal, prevVal, fmt) {
-  if (prevVal === null || prevVal === undefined) {
+  if (prevVal === null || prevVal === undefined || curVal === null || curVal === undefined ||
+      !isFinite(prevVal) || !isFinite(curVal)) {
     return '<div class="delta na">N-1 indisponible</div>';
   }
   const diff = curVal - prevVal;
@@ -1595,6 +1679,8 @@ function renderKpisCompare() {
     ["Clics", cur.clicks, prev ? prev.clicks : null, intFr],
     ["Achats", cur.purchases, prev ? prev.purchases : null, intFr],
     ["ROAS", cur.roas, prev ? prev.roas : null, x => x.toFixed(2) + "x"],
+    ["Nouveaux clients", cur.purchases_new, prev ? prev.purchases_new : null, intFr],
+    ["Coût par nouveau client", cur.cost_per_new, prev ? prev.cost_per_new : null, eurosOrDash],
   ];
   document.getElementById("kpis-compare").innerHTML = metrics.map(([label, curV, prevV, fmt]) => `
     <div class="kpi-compare">
@@ -1932,15 +2018,14 @@ const TUNNEL_COLS = [
   ["ROAS", "roas", fmtOrDash(roasFmt)],
 ];
 
-// Conditional-formatting color scale: green (low/good) -> red (high/bad),
-// applied per-column relative to the min/max of the currently rendered rows.
+// Conditional-formatting color scale: ASight violet, intensity (opacity)
+// scales with the value relative to the min/max of the currently rendered
+// rows - low values are near-transparent, high values are full violet.
 function condFmtColor(value, min, max) {
   if (value === null || value === undefined || !isFinite(value) || max <= min) return "";
   const t = (value - min) / (max - min);
-  const r = Math.round(255 - t * 45);
-  const g = Math.round(90 + (1 - t) * 130);
-  const b = Math.round(90 + (1 - t) * 40);
-  return `background-color: rgba(${r}, ${g}, ${b}, 0.55);`;
+  const alpha = (0.08 + t * 0.52).toFixed(2);
+  return `background-color: rgba(90, 69, 255, ${alpha});`;
 }
 
 function renderTunnelTable() {
@@ -2098,10 +2183,11 @@ function computeCampaignMetrics(rows) {
   const buckets = new Map();
   for (const r of rows) {
     const idx = r[FC.campaign_idx];
-    if (!buckets.has(idx)) buckets.set(idx, { impressions: 0, clicks: 0, purchases: 0, conv_value: 0, add_to_cart: 0, cost: 0 });
+    if (!buckets.has(idx)) buckets.set(idx, { impressions: 0, clicks: 0, purchases: 0, conv_value: 0, add_to_cart: 0, cost: 0, purchases_new: 0 });
     const b = buckets.get(idx);
     b.impressions += r[FC.impressions]; b.clicks += r[FC.clicks]; b.purchases += r[FC.purchases];
     b.conv_value += r[FC.conv_value]; b.add_to_cart += r[FC.add_to_cart]; b.cost += r[FC.cost];
+    b.purchases_new += r[FC.purchases_new];
   }
   const out = new Map();
   for (const [idx, b] of buckets) {
@@ -2113,6 +2199,8 @@ function computeCampaignMetrics(rows) {
       purchases: b.purchases, conv_value: b.conv_value,
       roas: b.cost > 0 ? b.conv_value / b.cost : 0,
       cost: b.cost,
+      purchases_new: b.purchases_new,
+      cost_per_new: costPerNew(b.cost, b.purchases_new),
     });
   }
   return out;
@@ -2127,10 +2215,24 @@ const CMP_COLS = [
   ["Achats", "purchases", intFr],
   ["Valeur de conversion", "conv_value", euros],
   ["ROAS", "roas", v => v.toFixed(2) + "x"],
+  ["Nouveaux clients", "purchases_new", intFr],
+  ["Coût / nouveau client", "cost_per_new", eurosOrDash],
 ];
-const CMP_ZERO = { impressions: 0, clicks: 0, ctr: 0, add_to_cart: 0, taux_atc: 0, purchases: 0, conv_value: 0, roas: 0, cost: 0 };
+const CMP_ZERO = { impressions: 0, clicks: 0, ctr: 0, add_to_cart: 0, taux_atc: 0, purchases: 0, conv_value: 0, roas: 0, cost: 0, purchases_new: 0, cost_per_new: null };
 
-let cmpMarketFilter = null;
+// Default to the market with the highest total spend embedded in the data
+// (e.g. "US"), rather than "Tous les marchés".
+let cmpMarketFilter = (function highestSpendFullMarket() {
+  const spend = new Map();
+  for (const r of CAMPAIGN_RAW) {
+    const mkt = r[FC.market_full];
+    if (!mkt) continue;
+    spend.set(mkt, (spend.get(mkt) || 0) + r[FC.cost]);
+  }
+  let best = null, bestSpend = -1;
+  for (const [mkt, s] of spend) if (s > bestSpend) { best = mkt; bestSpend = s; }
+  return best;
+})();
 
 function renderComparisonTable() {
   const aStart = document.getElementById("cmp-a-start").value, aEnd = document.getElementById("cmp-a-end").value;
@@ -2151,15 +2253,21 @@ function renderComparisonTable() {
   const thead = "<thead><tr><th>Campagne</th>" +
     CMP_COLS.map(([label]) => `<th>${label}<br><span style="font-weight:400">A &rarr; B (&Delta;%)</span></th>`).join("") +
     "</tr></thead>";
+  // Values can be null (e.g. cost_per_new with 0 new customers) - rendered as
+  // a plain "A -> B" without a fabricated %/diff arrow in that case.
+  function cmpCell(av, bv, fmt) {
+    const aOk = av !== null && av !== undefined && isFinite(av);
+    const bOk = bv !== null && bv !== undefined && isFinite(bv);
+    if (!aOk && !bOk) return `<td>${fmt(av)} &rarr; ${fmt(bv)}</td>`;
+    const a2 = aOk ? av : 0, b2 = bOk ? bv : 0;
+    const diff = b2 - a2;
+    const pct = a2 !== 0 ? (diff / a2 * 100) : (b2 > 0 ? 100 : 0);
+    const cls = diff >= 0 ? "up" : "down";
+    const sign = diff >= 0 ? "+" : "";
+    return `<td>${fmt(av)} &rarr; ${fmt(bv)} <span class="${cls}">(${sign}${pct.toFixed(1)}%)</span></td>`;
+  }
   const tbody = "<tbody>" + rows.map(r => {
-    const cells = CMP_COLS.map(([, key, fmt]) => {
-      const av = r.a[key], bv = r.b[key];
-      const diff = bv - av;
-      const pct = av !== 0 ? (diff / av * 100) : (bv > 0 ? 100 : 0);
-      const cls = diff >= 0 ? "up" : "down";
-      const sign = diff >= 0 ? "+" : "";
-      return `<td>${fmt(av)} &rarr; ${fmt(bv)} <span class="${cls}">(${sign}${pct.toFixed(1)}%)</span></td>`;
-    }).join("");
+    const cells = CMP_COLS.map(([, key, fmt]) => cmpCell(r.a[key], r.b[key], fmt)).join("");
     return `<tr><td>${r.name}</td>${cells}</tr>`;
   }).join("") + "</tbody>";
 
@@ -2190,6 +2298,7 @@ const cmpBStart = document.getElementById("cmp-b-start"), cmpBEnd = document.get
   const sel = document.getElementById("cmp-market-filter");
   sel.innerHTML = '<option value="">Tous les marchés</option>' +
     MARKETS_FULL.map(m => `<option value="${m}">${m}</option>`).join("");
+  if (cmpMarketFilter !== null) sel.value = cmpMarketFilter;
   sel.addEventListener("change", () => {
     cmpMarketFilter = sel.value === "" ? null : sel.value;
     renderComparisonTable();
@@ -2208,6 +2317,7 @@ function update() {
   renderFormatMix(rows);
   renderTop5Badges(rows);
   marketBarChart(aggregateMarketJS(marketRowsInDateRange()));
+  marketNewCustomerChart(aggregateMarketNewCustomerJS(campaignRowsInRange(start, end)));
   renderPersonaChart(dateRows);
   bubbleChart("chart-format", aggregateJS(rows, "format"));
   barChart("chart-gamme", aggregateJS(rows, "gamme"), "roas", false, "spend");
