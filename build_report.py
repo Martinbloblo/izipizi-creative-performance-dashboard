@@ -991,6 +991,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   table.cmp-table th, table.cmp-table td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: right; white-space: nowrap; }
   table.cmp-table th:first-child, table.cmp-table td:first-child { text-align: left; white-space: normal; max-width: 240px; }
   table.cmp-table th { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; background: #FAFAFA; position: sticky; top: 0; }
+  table.cmp-table th.cond-spend, table.cmp-table th.cond-cpa { color: #fff; background: var(--violet); }
   table.cmp-table tbody tr:hover { background: #FAFAFA; }
   .cmp-table .up { color: #1E9E4E; }
   .cmp-table .down { color: var(--red); }
@@ -1092,7 +1093,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <section class="card">
     <div class="section-eyebrow">5 &middot; Analyse temporelle</div>
     <h2>Vue Tunnel</h2>
-    <div class="sub">Vue globale (toutes campagnes), agrégée par mois par défaut - basculez sur semaine ou jour. Filtre marché optionnel.</div>
+    <div class="sub">Vue globale (toutes campagnes), agrégée par mois par défaut - basculez sur semaine ou jour. Filtre marché optionnel. Budget et CPA en surbrillance conditionnelle (plus la couleur est marquée, plus la valeur est extrême sur la période affichée).</div>
     <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
       <div class="granularity-toggle" id="tunnel-granularity-toggle" style="margin-bottom:0;">
         <button class="preset-btn active" data-gran="month">Mois</button>
@@ -1102,21 +1103,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <select id="tunnel-market-select" class="cmp-select"></select>
     </div>
     <div class="table-scroll"><table class="cmp-table" id="tunnel-table"></table></div>
-  </section>
-
-  <section class="card">
-    <div class="section-eyebrow">6 &middot; Analyse temporelle</div>
-    <h2>Vue Funnel complet</h2>
-    <div class="sub">Vue globale (toutes campagnes), agrégée par mois par défaut - basculez sur semaine ou jour. Filtre marché optionnel.</div>
-    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
-      <div class="granularity-toggle" id="funnel-granularity-toggle" style="margin-bottom:0;">
-        <button class="preset-btn active" data-gran="month">Mois</button>
-        <button class="preset-btn" data-gran="week">Semaine</button>
-        <button class="preset-btn" data-gran="day">Jour</button>
-      </div>
-      <select id="funnel-market-select" class="cmp-select"></select>
-    </div>
-    <div class="table-scroll"><table class="cmp-table" id="funnel-table"></table></div>
   </section>
 
   <section class="card">
@@ -1183,21 +1169,21 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </section>
 
   <section class="card">
-    <div class="section-eyebrow">7 &middot; Analyse temporelle</div>
+    <div class="section-eyebrow">6 &middot; Analyse temporelle</div>
     <h2>Whitelisting vs total</h2>
     <div class="sub">% du spend des campagnes "whitelisting" (détection insensible à la casse dans le nom de campagne) vs spend total, sur la période sélectionnée.</div>
     <div id="whitelisting-box"></div>
   </section>
 
   <section class="card">
-    <div class="section-eyebrow">8 &middot; Analyse temporelle</div>
+    <div class="section-eyebrow">7 &middot; Analyse temporelle</div>
     <h2>Spend par landing page</h2>
     <div class="sub">Agrégation du spend par landing page (destination URL), sur la période sélectionnée.</div>
     <div id="landing-page-box"></div>
   </section>
 
   <section class="card">
-    <div class="section-eyebrow">9 &middot; Analyse temporelle</div>
+    <div class="section-eyebrow">8 &middot; Analyse temporelle</div>
     <h2>Comparaison campagne (période personnalisée)</h2>
     <div class="sub">2 périodes libres et indépendantes - Impressions, Clics, CTR, Add to cart, Taux d'ATC, Achats, Valeur de conversion, ROAS par campagne.</div>
     <div class="period-picker">
@@ -1685,7 +1671,16 @@ function renderTop5Badges(rows) {
 // approximation, not a fabricated number.
 // ---------------------------------------------------------------------------
 let cpmrGranularity = "day";
-let cpmrCountry = "ALL";
+// Default to the market (FR/US/UK) with the highest total spend embedded in
+// the data, rather than a hardcoded "ALL" - computed once at load time.
+let cpmrCountry = (function highestSpendMarket() {
+  const spend = { FR: 0, US: 0, UK: 0 };
+  for (const r of CAMPAIGN_RAW) {
+    const mkt = r[FC.market_loose];
+    if (mkt && spend.hasOwnProperty(mkt)) spend[mkt] += r[FC.cost];
+  }
+  return Object.keys(spend).reduce((a, b) => (spend[b] > spend[a] ? b : a));
+})();
 let cpmrCampaignIdx = null; // null = aggregated by country; else drill into one campaign
 
 function cpmrBucketKey(dateStr, granularity) {
@@ -1821,6 +1816,7 @@ document.querySelectorAll(".granularity-toggle .preset-btn").forEach(btn => {
 });
 
 document.querySelectorAll("#cpmr-country-toggle .preset-btn").forEach(btn => {
+  btn.classList.toggle("active", btn.dataset.country === cpmrCountry);
   btn.addEventListener("click", () => {
     document.querySelectorAll("#cpmr-country-toggle .preset-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
@@ -1876,10 +1872,11 @@ function tunnelBucketAgg(rows, granularity, market) {
   for (const r of rows) {
     if (market && r[FC.market_full] !== market) continue;
     const bKey = tunnelBucketKey(r[FC.date], granularity);
-    if (!buckets.has(bKey)) buckets.set(bKey, { cost: 0, impressions: 0, clicks: 0, add_to_cart: 0, purchases: 0, conv_value: 0 });
+    if (!buckets.has(bKey)) buckets.set(bKey, { cost: 0, impressions: 0, clicks: 0, add_to_cart: 0, purchases: 0, conv_value: 0, landing_page_views: 0, initiate_checkout: 0 });
     const b = buckets.get(bKey);
     b.cost += r[FC.cost]; b.impressions += r[FC.impressions]; b.clicks += r[FC.clicks];
     b.add_to_cart += r[FC.add_to_cart]; b.purchases += r[FC.purchases]; b.conv_value += r[FC.conv_value];
+    b.landing_page_views += r[FC.landing_page_views]; b.initiate_checkout += r[FC.initiate_checkout];
   }
   return Array.from(buckets.keys()).sort().reverse().map(k => {
     const b = buckets.get(k);
@@ -1891,9 +1888,15 @@ function tunnelBucketAgg(rows, granularity, market) {
       ctr: b.impressions > 0 ? b.clicks / b.impressions * 100 : null,
       cpc: b.clicks > 0 ? b.cost / b.clicks : null,
       cost: b.cost,
+      landing_page_views: b.landing_page_views,
+      lp_per_click: b.clicks > 0 ? b.landing_page_views / b.clicks * 100 : null,
       add_to_cart: b.add_to_cart,
+      atc_per_lp: b.landing_page_views > 0 ? b.add_to_cart / b.landing_page_views * 100 : null,
       cost_per_atc: b.add_to_cart > 0 ? b.cost / b.add_to_cart : null,
+      initiate_checkout: b.initiate_checkout,
+      ic_per_atc: b.add_to_cart > 0 ? b.initiate_checkout / b.add_to_cart * 100 : null,
       purchases: b.purchases,
+      purchases_per_ic: b.initiate_checkout > 0 ? b.purchases / b.initiate_checkout * 100 : null,
       cpa: b.purchases > 0 ? b.cost / b.purchases : null,
       cvr: b.clicks > 0 ? b.purchases / b.clicks * 100 : null,
       conv_value: b.conv_value,
@@ -1903,31 +1906,60 @@ function tunnelBucketAgg(rows, granularity, market) {
   });
 }
 
+// Budget (cost) and CPA get heatmap-style conditional formatting; their <th>
+// headers are flagged with a distinct accent so it's clear which columns
+// carry it. Everything else stays a plain column.
 const TUNNEL_COLS = [
   ["Impressions", "impressions", fmtOrDash(intFr)],
   ["CPM", "cpm", fmtOrDash(euros)],
   ["Clics", "clicks", fmtOrDash(intFr)],
   ["CTR", "ctr", fmtOrDash(pctFr)],
   ["CPC", "cpc", fmtOrDash(euros)],
-  ["Budget", "cost", fmtOrDash(euros)],
+  ["Budget", "cost", fmtOrDash(euros), "cond-spend"],
+  ["LP Views", "landing_page_views", fmtOrDash(intFr)],
+  ["LP Views/Clics", "lp_per_click", fmtOrDash(pctFr)],
   ["ATC", "add_to_cart", fmtOrDash(intFr)],
+  ["ATC/LP Views", "atc_per_lp", fmtOrDash(pctFr)],
   ["Coût par ATC", "cost_per_atc", fmtOrDash(euros)],
+  ["Initiate Checkout", "initiate_checkout", fmtOrDash(intFr)],
+  ["IC/ATC", "ic_per_atc", fmtOrDash(pctFr)],
   ["Achats", "purchases", fmtOrDash(intFr)],
-  ["CPA", "cpa", fmtOrDash(euros)],
+  ["Achats/IC", "purchases_per_ic", fmtOrDash(pctFr)],
+  ["CPA", "cpa", fmtOrDash(euros), "cond-cpa"],
   ["CVR", "cvr", fmtOrDash(pctFr)],
   ["CA TTC", "conv_value", fmtOrDash(euros)],
   ["AOV", "aov", fmtOrDash(euros)],
   ["ROAS", "roas", fmtOrDash(roasFmt)],
 ];
 
+// Conditional-formatting color scale: green (low/good) -> red (high/bad),
+// applied per-column relative to the min/max of the currently rendered rows.
+function condFmtColor(value, min, max) {
+  if (value === null || value === undefined || !isFinite(value) || max <= min) return "";
+  const t = (value - min) / (max - min);
+  const r = Math.round(255 - t * 45);
+  const g = Math.round(90 + (1 - t) * 130);
+  const b = Math.round(90 + (1 - t) * 40);
+  return `background-color: rgba(${r}, ${g}, ${b}, 0.55);`;
+}
+
 function renderTunnelTable() {
   const table = document.getElementById("tunnel-table");
   const buckets = tunnelBucketAgg(CAMPAIGN_RAW, tunnelGranularity, tunnelMarket);
   if (!buckets.length) { table.innerHTML = `<tbody><tr><td class="empty-state">Aucune donnée sur la période embarquée.</td></tr></tbody>`; return; }
   const periodLabel = tunnelGranularity === "month" ? "Mois" : tunnelGranularity === "week" ? "Semaine" : "Jour";
-  const thead = `<thead><tr><th>${periodLabel}</th>` + TUNNEL_COLS.map(([label]) => `<th>${label}</th>`).join("") + "</tr></thead>";
+  const thead = `<thead><tr><th>${periodLabel}</th>` + TUNNEL_COLS.map(([label, , , condClass]) => `<th${condClass ? ` class="${condClass}"` : ""}>${label}</th>`).join("") + "</tr></thead>";
+  const spendVals = buckets.map(row => row.cost).filter(v => v !== null && isFinite(v));
+  const cpaVals = buckets.map(row => row.cpa).filter(v => v !== null && isFinite(v));
+  const spendMin = Math.min(...spendVals), spendMax = Math.max(...spendVals);
+  const cpaMin = Math.min(...cpaVals), cpaMax = Math.max(...cpaVals);
   const tbody = "<tbody>" + buckets.map(row => {
-    const cells = TUNNEL_COLS.map(([, key, fmt]) => `<td>${fmt(row[key])}</td>`).join("");
+    const cells = TUNNEL_COLS.map(([, key, fmt, condClass]) => {
+      let style = "";
+      if (condClass === "cond-spend") style = condFmtColor(row[key], spendMin, spendMax);
+      else if (condClass === "cond-cpa") style = condFmtColor(row[key], cpaMin, cpaMax);
+      return `<td${style ? ` style="${style}"` : ""}>${fmt(row[key])}</td>`;
+    }).join("");
     return `<tr><td>${formatBucketLabel(row.key, tunnelGranularity)}</td>${cells}</tr>`;
   }).join("") + "</tbody>";
   table.innerHTML = thead + tbody;
@@ -1953,93 +1985,6 @@ document.querySelectorAll("#tunnel-granularity-toggle .preset-btn").forEach(btn 
 })();
 
 renderTunnelTable();
-
-// ---------------------------------------------------------------------------
-// Section 6 - Vue Funnel complet : agrégation globale (toutes campagnes) des
-// étapes du tunnel média-achat (Impressions -> Clics -> LP Views -> ATC ->
-// Initiate Checkout -> Achats) par mois/semaine/jour, avec filtre marché
-// optionnel. Réutilise les mêmes buckets de date que la Vue Tunnel.
-// ---------------------------------------------------------------------------
-let funnelGranularity = "month";
-let funnelMarket = null;
-
-function funnelBucketAgg(rows, granularity, market) {
-  const buckets = new Map();
-  for (const r of rows) {
-    if (market && r[FC.market_full] !== market) continue;
-    const bKey = tunnelBucketKey(r[FC.date], granularity);
-    if (!buckets.has(bKey)) buckets.set(bKey, { impressions: 0, clicks: 0, landing_page_views: 0, add_to_cart: 0, initiate_checkout: 0, purchases: 0 });
-    const b = buckets.get(bKey);
-    b.impressions += r[FC.impressions]; b.clicks += r[FC.clicks];
-    b.landing_page_views += r[FC.landing_page_views]; b.add_to_cart += r[FC.add_to_cart];
-    b.initiate_checkout += r[FC.initiate_checkout]; b.purchases += r[FC.purchases];
-  }
-  return Array.from(buckets.keys()).sort().reverse().map(k => {
-    const b = buckets.get(k);
-    return {
-      key: k,
-      impressions: b.impressions,
-      clicks: b.clicks,
-      ctr: b.impressions > 0 ? b.clicks / b.impressions * 100 : null,
-      landing_page_views: b.landing_page_views,
-      lp_per_click: b.clicks > 0 ? b.landing_page_views / b.clicks * 100 : null,
-      add_to_cart: b.add_to_cart,
-      atc_per_lp: b.landing_page_views > 0 ? b.add_to_cart / b.landing_page_views * 100 : null,
-      initiate_checkout: b.initiate_checkout,
-      ic_per_atc: b.add_to_cart > 0 ? b.initiate_checkout / b.add_to_cart * 100 : null,
-      purchases: b.purchases,
-      purchases_per_ic: b.initiate_checkout > 0 ? b.purchases / b.initiate_checkout * 100 : null,
-    };
-  });
-}
-
-const FUNNEL_COLS = [
-  ["Impressions", "impressions", fmtOrDash(intFr)],
-  ["Clics", "clicks", fmtOrDash(intFr)],
-  ["CTR", "ctr", fmtOrDash(pctFr)],
-  ["LP Views", "landing_page_views", fmtOrDash(intFr)],
-  ["LP Views/Clics", "lp_per_click", fmtOrDash(pctFr)],
-  ["ATC", "add_to_cart", fmtOrDash(intFr)],
-  ["ATC/LP Views", "atc_per_lp", fmtOrDash(pctFr)],
-  ["Initiate Checkout", "initiate_checkout", fmtOrDash(intFr)],
-  ["IC/ATC", "ic_per_atc", fmtOrDash(pctFr)],
-  ["Achats", "purchases", fmtOrDash(intFr)],
-  ["Achats/IC", "purchases_per_ic", fmtOrDash(pctFr)],
-];
-
-function renderFunnelTable() {
-  const table = document.getElementById("funnel-table");
-  const buckets = funnelBucketAgg(CAMPAIGN_RAW, funnelGranularity, funnelMarket);
-  if (!buckets.length) { table.innerHTML = `<tbody><tr><td class="empty-state">Aucune donnée sur la période embarquée.</td></tr></tbody>`; return; }
-  const periodLabel = funnelGranularity === "month" ? "Mois" : funnelGranularity === "week" ? "Semaine" : "Jour";
-  const thead = `<thead><tr><th>${periodLabel}</th>` + FUNNEL_COLS.map(([label]) => `<th>${label}</th>`).join("") + "</tr></thead>";
-  const tbody = "<tbody>" + buckets.map(row => {
-    const cells = FUNNEL_COLS.map(([, key, fmt]) => `<td>${fmt(row[key])}</td>`).join("");
-    return `<tr><td>${formatBucketLabel(row.key, funnelGranularity)}</td>${cells}</tr>`;
-  }).join("") + "</tbody>";
-  table.innerHTML = thead + tbody;
-}
-
-document.querySelectorAll("#funnel-granularity-toggle .preset-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("#funnel-granularity-toggle .preset-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    funnelGranularity = btn.dataset.gran;
-    renderFunnelTable();
-  });
-});
-
-(function initFunnelMarketSelect() {
-  const sel = document.getElementById("funnel-market-select");
-  sel.innerHTML = '<option value="">Tous les marchés</option>' +
-    MARKETS_FULL.map(m => `<option value="${m}">${m}</option>`).join("");
-  sel.addEventListener("change", () => {
-    funnelMarket = sel.value === "" ? null : sel.value;
-    renderFunnelTable();
-  });
-})();
-
-renderFunnelTable();
 
 // ---------------------------------------------------------------------------
 // Section 3 - Top 5 créas : classement des 5 créas les plus dépensières sur
