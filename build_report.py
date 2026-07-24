@@ -391,6 +391,60 @@ def load_campaign_daily_ext_rows():
     return rows
 
 
+def load_ad_campaign_link_rows():
+    """Ad x campaign totals over the full embedded window (data_ad_campaign_link.csv,
+    no date dimension) - used to attribute a market to each ad (via the campaign
+    it ran in) for the Top 5 créas section."""
+    rows = []
+    with open(AD_CAMPAIGN_LINK_CSV_PATH, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append({
+                "ad_name": r["ad_name"],
+                "campaign_name": r["campaign_name"],
+                "market_full": parse_market(r["campaign_name"]),
+                "cost": safe_float(r["cost"]),
+                "purchases": safe_float(r["purchases"]),
+                "conv_value": safe_float(r["conv_value"]),
+            })
+    return rows
+
+
+def load_ad_thumbnails():
+    """ad_name -> Facebook creative thumbnail URL (data_ad_thumbnails.csv, optional -
+    only present once the Supermetrics creative_thumbnail_url query has been run;
+    Top 5 créas degrades gracefully to no image if this file doesn't exist yet)."""
+    path = ROOT / "data_ad_thumbnails.csv"
+    if not path.exists():
+        return {}
+    thumbs = {}
+    with open(path, encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            url = r.get("thumbnail_url") or ""
+            if url and r["ad_name"] not in thumbs:
+                thumbs[r["ad_name"]] = url
+    return thumbs
+
+
+def build_ad_campaign_payload():
+    """Ad-level rows (ad_idx, market_full, cost, purchases, conv_value) for the
+    Top 5 créas section, plus a parallel thumbnails array indexed like ad_names."""
+    rows = load_ad_campaign_link_rows()
+    thumbs = load_ad_thumbnails()
+    ad_names = sorted({r["ad_name"] for r in rows})
+    ad_index = {name: i for i, name in enumerate(ad_names)}
+    compact_rows = [
+        [
+            ad_index[r["ad_name"]], r["market_full"] or "",
+            round(r["cost"], 2), round(r["purchases"], 1), round(r["conv_value"], 2),
+        ]
+        for r in rows
+    ]
+    thumbnails = [thumbs.get(name, "") for name in ad_names]
+    return {"ad_names": ad_names, "rows": compact_rows, "thumbnails": thumbnails}
+
+
 def build_campaign_daily_payload():
     rows = load_campaign_daily_ext_rows()
     campaign_names = sorted({r["campaign_name"] for r in rows})
@@ -811,6 +865,7 @@ def main():
     daily = build_daily_payload()
     market_daily = build_market_daily_payload()
     campaign_daily = build_campaign_daily_payload()
+    ad_campaign = build_ad_campaign_payload()
 
     payload = {
         "meta": {
@@ -853,6 +908,7 @@ def main():
         "daily": daily,
         "market_daily": market_daily,
         "campaign_daily": campaign_daily,
+        "ad_campaign": ad_campaign,
         "format_macro_map": FORMAT_MACRO_MAP,
     }
 
@@ -941,6 +997,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .table-scroll { overflow-x: auto; }
 
   .empty-state { padding: 30px; text-align: center; color: #999; font-size: 14px; background: #FAFAFA; border-radius: 8px; }
+
+  .top5-creas-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 8px; }
+  .top5-creas-card { border: 1px solid #eee; border-radius: 10px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+  .top5-creas-thumb { width: 100%; aspect-ratio: 1 / 1; background: #F1EEFF center/cover no-repeat; display: flex; align-items: center; justify-content: center; color: #B0A8FF; font-size: 12px; text-align: center; padding: 10px; }
+  .top5-creas-rank { font-weight: 700; color: var(--violet); font-size: 12px; }
+  .top5-creas-body { padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+  .top5-creas-name { font-size: 12px; font-weight: 600; color: var(--dark); line-height: 1.3; max-height: 3.9em; overflow: hidden; }
+  .top5-creas-metrics { display: flex; justify-content: space-between; font-size: 12.5px; color: #666; margin-top: 4px; }
+  .top5-creas-metrics b { color: var(--dark); }
 </style>
 </head>
 <body>
@@ -981,6 +1046,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div id="chart-format-mix" class="chart" style="height:150px"></div>
     <div class="badges-grid" id="top5-badges"></div>
     <div class="reco-caption">"Top produits" = Gamme (SUN, KIDS, READING...). "Top angles" = Collection/Ligne créative, faute de segment "angle" dédié dans la nomenclature.</div>
+  </section>
+
+  <section class="card">
+    <div class="section-eyebrow">3 &middot; Vue d'ensemble</div>
+    <h2>Top 5 créas</h2>
+    <div class="sub">Classement des 5 créas les plus performantes par spend, sur l'ensemble de la période embarquée. Filtrez par marché pour un classement local.</div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <select id="top5-market-select" class="cmp-select"></select>
+    </div>
+    <div id="top5-creas-grid" class="top5-creas-grid"></div>
   </section>
 
   <section class="card">
@@ -1041,7 +1116,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </div>
       <select id="funnel-market-select" class="cmp-select"></select>
     </div>
-    <div id="funnel-box"></div>
+    <div class="table-scroll"><table class="cmp-table" id="funnel-table"></table></div>
   </section>
 
   <section class="card">
@@ -1158,8 +1233,9 @@ const FM = { date:0, market:1, cost:2, purchases:3, conv_value:4 };
 const MARKET_RAW = DATA.market_daily.rows;
 
 // Campaign-level rows (extended metrics): [date, campaign_idx, cost, purchases,
-// conv_value, impressions, clicks, add_to_cart, frequency, market_loose, whitelisting, market_full]
-const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10, market_full:11 };
+// conv_value, impressions, clicks, add_to_cart, frequency, market_loose, whitelisting,
+// market_full, landing_page_views, initiate_checkout]
+const FC = { date:0, campaign_idx:1, cost:2, purchases:3, conv_value:4, impressions:5, clicks:6, add_to_cart:7, frequency:8, market_loose:9, whitelisting:10, market_full:11, landing_page_views:12, initiate_checkout:13 };
 const CAMPAIGN_RAW = DATA.campaign_daily.rows;
 const CAMPAIGN_NAMES = DATA.campaign_daily.campaign_names;
 const MARKETS_FULL = DATA.campaign_daily.markets_full;
@@ -1877,6 +1953,158 @@ document.querySelectorAll("#tunnel-granularity-toggle .preset-btn").forEach(btn 
 })();
 
 renderTunnelTable();
+
+// ---------------------------------------------------------------------------
+// Section 6 - Vue Funnel complet : agrégation globale (toutes campagnes) des
+// étapes du tunnel média-achat (Impressions -> Clics -> LP Views -> ATC ->
+// Initiate Checkout -> Achats) par mois/semaine/jour, avec filtre marché
+// optionnel. Réutilise les mêmes buckets de date que la Vue Tunnel.
+// ---------------------------------------------------------------------------
+let funnelGranularity = "month";
+let funnelMarket = null;
+
+function funnelBucketAgg(rows, granularity, market) {
+  const buckets = new Map();
+  for (const r of rows) {
+    if (market && r[FC.market_full] !== market) continue;
+    const bKey = tunnelBucketKey(r[FC.date], granularity);
+    if (!buckets.has(bKey)) buckets.set(bKey, { impressions: 0, clicks: 0, landing_page_views: 0, add_to_cart: 0, initiate_checkout: 0, purchases: 0 });
+    const b = buckets.get(bKey);
+    b.impressions += r[FC.impressions]; b.clicks += r[FC.clicks];
+    b.landing_page_views += r[FC.landing_page_views]; b.add_to_cart += r[FC.add_to_cart];
+    b.initiate_checkout += r[FC.initiate_checkout]; b.purchases += r[FC.purchases];
+  }
+  return Array.from(buckets.keys()).sort().reverse().map(k => {
+    const b = buckets.get(k);
+    return {
+      key: k,
+      impressions: b.impressions,
+      clicks: b.clicks,
+      ctr: b.impressions > 0 ? b.clicks / b.impressions * 100 : null,
+      landing_page_views: b.landing_page_views,
+      lp_per_click: b.clicks > 0 ? b.landing_page_views / b.clicks * 100 : null,
+      add_to_cart: b.add_to_cart,
+      atc_per_lp: b.landing_page_views > 0 ? b.add_to_cart / b.landing_page_views * 100 : null,
+      initiate_checkout: b.initiate_checkout,
+      ic_per_atc: b.add_to_cart > 0 ? b.initiate_checkout / b.add_to_cart * 100 : null,
+      purchases: b.purchases,
+      purchases_per_ic: b.initiate_checkout > 0 ? b.purchases / b.initiate_checkout * 100 : null,
+    };
+  });
+}
+
+const FUNNEL_COLS = [
+  ["Impressions", "impressions", fmtOrDash(intFr)],
+  ["Clics", "clicks", fmtOrDash(intFr)],
+  ["CTR", "ctr", fmtOrDash(pctFr)],
+  ["LP Views", "landing_page_views", fmtOrDash(intFr)],
+  ["LP Views/Clics", "lp_per_click", fmtOrDash(pctFr)],
+  ["ATC", "add_to_cart", fmtOrDash(intFr)],
+  ["ATC/LP Views", "atc_per_lp", fmtOrDash(pctFr)],
+  ["Initiate Checkout", "initiate_checkout", fmtOrDash(intFr)],
+  ["IC/ATC", "ic_per_atc", fmtOrDash(pctFr)],
+  ["Achats", "purchases", fmtOrDash(intFr)],
+  ["Achats/IC", "purchases_per_ic", fmtOrDash(pctFr)],
+];
+
+function renderFunnelTable() {
+  const table = document.getElementById("funnel-table");
+  const buckets = funnelBucketAgg(CAMPAIGN_RAW, funnelGranularity, funnelMarket);
+  if (!buckets.length) { table.innerHTML = `<tbody><tr><td class="empty-state">Aucune donnée sur la période embarquée.</td></tr></tbody>`; return; }
+  const periodLabel = funnelGranularity === "month" ? "Mois" : funnelGranularity === "week" ? "Semaine" : "Jour";
+  const thead = `<thead><tr><th>${periodLabel}</th>` + FUNNEL_COLS.map(([label]) => `<th>${label}</th>`).join("") + "</tr></thead>";
+  const tbody = "<tbody>" + buckets.map(row => {
+    const cells = FUNNEL_COLS.map(([, key, fmt]) => `<td>${fmt(row[key])}</td>`).join("");
+    return `<tr><td>${formatBucketLabel(row.key, funnelGranularity)}</td>${cells}</tr>`;
+  }).join("") + "</tbody>";
+  table.innerHTML = thead + tbody;
+}
+
+document.querySelectorAll("#funnel-granularity-toggle .preset-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#funnel-granularity-toggle .preset-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    funnelGranularity = btn.dataset.gran;
+    renderFunnelTable();
+  });
+});
+
+(function initFunnelMarketSelect() {
+  const sel = document.getElementById("funnel-market-select");
+  sel.innerHTML = '<option value="">Tous les marchés</option>' +
+    MARKETS_FULL.map(m => `<option value="${m}">${m}</option>`).join("");
+  sel.addEventListener("change", () => {
+    funnelMarket = sel.value === "" ? null : sel.value;
+    renderFunnelTable();
+  });
+})();
+
+renderFunnelTable();
+
+// ---------------------------------------------------------------------------
+// Section 3 - Top 5 créas : classement des 5 créas les plus dépensières sur
+// l'ensemble de la période embarquée (totaux ad x campagne, sans dimension
+// date - data_ad_campaign_link.csv), avec filtre marché optionnel et visuel
+// (thumbnail Facebook) quand disponible.
+// ---------------------------------------------------------------------------
+const AC = { ad_idx:0, market_full:1, cost:2, purchases:3, conv_value:4 };
+const AD_CAMPAIGN_ROWS = DATA.ad_campaign.rows;
+const AD_CAMPAIGN_NAMES = DATA.ad_campaign.ad_names;
+const AD_THUMBNAILS = DATA.ad_campaign.thumbnails;
+let top5Market = null;
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+function computeTop5(market) {
+  const totals = new Map();
+  for (const r of AD_CAMPAIGN_ROWS) {
+    if (market && r[AC.market_full] !== market) continue;
+    const idx = r[AC.ad_idx];
+    if (!totals.has(idx)) totals.set(idx, { cost: 0, purchases: 0, conv_value: 0 });
+    const t = totals.get(idx);
+    t.cost += r[AC.cost]; t.purchases += r[AC.purchases]; t.conv_value += r[AC.conv_value];
+  }
+  return Array.from(totals.entries())
+    .map(([idx, t]) => ({
+      ad_name: AD_CAMPAIGN_NAMES[idx],
+      thumbnail: AD_THUMBNAILS[idx] || "",
+      cost: t.cost, purchases: t.purchases, conv_value: t.conv_value,
+      roas: t.cost > 0 ? t.conv_value / t.cost : null,
+    }))
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 5);
+}
+
+function renderTop5Creas() {
+  const grid = document.getElementById("top5-creas-grid");
+  const top5 = computeTop5(top5Market);
+  if (!top5.length) { grid.innerHTML = `<div class="empty-state">Aucune créa sur ce marché.</div>`; return; }
+  grid.innerHTML = top5.map((c, i) => `
+    <div class="top5-creas-card">
+      <div class="top5-creas-thumb"${c.thumbnail ? ` style="background-image:url('${c.thumbnail}')"` : ""}>${c.thumbnail ? "" : "Visuel indisponible"}</div>
+      <div class="top5-creas-body">
+        <div class="top5-creas-rank">#${i + 1}</div>
+        <div class="top5-creas-name">${escapeHtml(c.ad_name)}</div>
+        <div class="top5-creas-metrics"><span>Spend</span><b>${euros(c.cost)}</b></div>
+        <div class="top5-creas-metrics"><span>ROAS</span><b>${c.roas !== null ? c.roas.toFixed(2) + "x" : "—"}</b></div>
+      </div>
+    </div>
+  `).join("");
+}
+
+(function initTop5MarketSelect() {
+  const sel = document.getElementById("top5-market-select");
+  sel.innerHTML = '<option value="">Tous les marchés</option>' +
+    MARKETS_FULL.map(m => `<option value="${m}">${m}</option>`).join("");
+  sel.addEventListener("change", () => {
+    top5Market = sel.value === "" ? null : sel.value;
+    renderTop5Creas();
+  });
+})();
+
+renderTop5Creas();
 
 // ---------------------------------------------------------------------------
 // Section 4 - Whitelisting vs total spend, on the shared date filter. Always
